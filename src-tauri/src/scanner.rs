@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 6;
+pub const CACHE_SCHEMA: u32 = 7;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -432,7 +432,7 @@ fn push_shortcuts(
                     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
                 let items = chunk
                     .iter()
-                    .map(|candidate| (candidate, resolve_shortcut(&candidate.path)))
+                    .map(|candidate| (candidate, resolve_shortcut(&candidate.path, &candidate.name)))
                     .collect::<Vec<_>>();
                 if initialized {
                     unsafe { CoUninitialize() };
@@ -543,20 +543,32 @@ fn is_auxiliary_exe(stem: &str) -> bool {
     AUX.iter().any(|word| lower.contains(word))
 }
 
-/// 在安装目录里挑选主程序：优先按应用名分词匹配，其次匹配厂商名（小米系），
-/// 最后退回第一个非辅助程序；找不到（或目录不可读）返回 None。
+/// 递归收集目录下的 exe（最多两层子目录），跳过卸载/更新等辅助目录。
 #[cfg(windows)]
-fn pick_main_executable(dir: &Path, display_name: &str) -> Option<String> {
-    if !dir.is_dir() {
-        return None;
+fn collect_executables(dir: &Path, remaining: u32, out: &mut Vec<(PathBuf, u64)>) {
+    if out.len() >= 2000 {
+        return;
     }
-    let mut candidates: Vec<String> = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return None;
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if remaining == 0 {
+                continue;
+            }
+            let lower = entry.file_name().to_string_lossy().to_lowercase();
+            if lower.starts_with("unins")
+                || lower.contains("uninstall")
+                || matches!(lower.as_str(), "update" | "updates" | "installer")
+            {
+                continue;
+            }
+            collect_executables(&path, remaining - 1, out);
             continue;
         }
         let extension = path
@@ -564,24 +576,106 @@ fn pick_main_executable(dir: &Path, display_name: &str) -> Option<String> {
             .and_then(|value| value.to_str())
             .unwrap_or_default();
         if extension.eq_ignore_ascii_case("exe") {
-            candidates.push(path.to_string_lossy().to_string());
+            out.push((path, metadata.len()));
         }
     }
+}
+
+/// 安装根、Program Files、系统目录这类泛化路径不适合用来挑主程序。
+#[cfg(windows)]
+fn is_generic_install_dir(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|value| value.to_str()) else {
+        return true;
+    };
+    let lower = name.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "program files"
+            | "program files (x86)"
+            | "windows"
+            | "users"
+            | "programdata"
+            | "appdata"
+            | "local"
+            | "roaming"
+            | "system32"
+            | "syswow64"
+            | "temp"
+    ) || dir.parent().is_none()
+}
+
+/// 从 InstallLocation、图标/卸载器所在目录及其上一级构造候选目录。
+#[cfg(windows)]
+fn candidate_install_dirs(
+    install_location: Option<&str>,
+    icon_exe: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |dir: &Path| {
+        if !dir.is_dir() || is_generic_install_dir(dir) {
+            return;
+        }
+        let lower = dir.to_string_lossy().to_lowercase();
+        if dirs.iter().any(|item| item.to_string_lossy().to_lowercase() == lower) {
+            return;
+        }
+        dirs.push(dir.to_path_buf());
+    };
+    if let Some(location) = install_location {
+        push(Path::new(location));
+    }
+    if let Some(exe) = icon_exe {
+        let path = Path::new(exe);
+        if let Some(parent) = path.parent() {
+            push(parent);
+            if let Some(grand) = parent.parent() {
+                push(grand);
+            }
+        }
+    }
+    dirs
+}
+
+/// 在安装目录里挑选主程序：递归两层子目录，按应用名分词、厂商标识、
+/// 文件体积综合打分，排除卸载器 / 安装器 / 更新器 / 服务等辅助程序。
+#[cfg(windows)]
+fn pick_main_executable(
+    dir: &Path,
+    display_name: &str,
+    publisher: Option<&str>,
+) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut candidates: Vec<(PathBuf, u64)> = Vec::new();
+    collect_executables(dir, 2, &mut candidates);
     if candidates.is_empty() {
         return None;
     }
 
+    const BRANDS: &[&str] = &[
+        "xiaomi",
+        "redmi",
+        "miconnect",
+        "mi connect",
+        "milink",
+        "miread",
+        "mihome",
+        "miui",
+    ];
     let name_lower = display_name.to_lowercase();
     let words: Vec<String> = name_lower
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|word| word.len() >= 2 && *word != "beta" && *word != "预览")
+        .filter(|word| word.len() >= 3 && *word != "beta" && *word != "preview")
         .map(str::to_string)
         .collect();
-    let is_xiaomi = name_lower.contains("xiaomi") || display_name.contains("小米");
+    let vendor_lower = format!("{name_lower} {}", publisher.unwrap_or_default().to_lowercase());
+    let brand = display_name.contains("小米")
+        || BRANDS.iter().any(|token| vendor_lower.contains(token));
 
-    let mut fallback: Option<String> = None;
-    for exe in &candidates {
-        let stem = Path::new(exe)
+    let mut best: Option<(i64, String)> = None;
+    for (path, size) in candidates {
+        let stem = path
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
@@ -589,19 +683,29 @@ fn pick_main_executable(dir: &Path, display_name: &str) -> Option<String> {
         if is_auxiliary_exe(&stem) {
             continue;
         }
-        if fallback.is_none() {
-            fallback = Some(exe.clone());
-        }
-        // 应用名分词命中（如 display name 里的关键词出现在主程序名里）
+        let mut score = 0i64;
         if words.iter().any(|word| stem.contains(word)) {
-            return Some(exe.clone());
+            score += 400;
         }
-        // 小米系应用的主程序常带 xiaomi / miread 等标识
-        if is_xiaomi && (stem.contains("xiaomi") || stem.contains("miread")) {
-            return Some(exe.clone());
+        if brand && BRANDS.iter().any(|token| stem.contains(token)) {
+            score += 300;
+        }
+        // 后台服务、崩溃上报、遥测等组件通常不是用户点击的主程序。
+        if stem.contains("service")
+            || stem.contains("daemon")
+            || stem.contains("crash")
+            || stem.contains("telemetry")
+            || stem.contains("helper")
+        {
+            score -= 250;
+        }
+        // 主程序通常体积更大，且更靠近安装根目录。
+        score += (size / (1024 * 1024)).min(200) as i64;
+        if best.as_ref().map(|(top, _)| score > *top).unwrap_or(true) {
+            best = Some((score, path.to_string_lossy().to_string()));
         }
     }
-    fallback
+    best.map(|(_, path)| path)
 }
 
 #[cfg(windows)]
@@ -627,7 +731,7 @@ enum ShortcutTarget {
 
 /// 读取 .lnk 的真实启动目标。
 #[cfg(windows)]
-fn resolve_shortcut(path: &str) -> ShortcutTarget {
+fn resolve_shortcut(path: &str, display_name: &str) -> ShortcutTarget {
     use windows::core::{Interface, HSTRING};
     use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink, SLGP_UNCPRIORITY};
@@ -664,10 +768,27 @@ fn resolve_shortcut(path: &str) -> ShortcutTarget {
         if !Path::new(&exe).is_file() || !is_app_target(&exe) {
             return ShortcutTarget::Missing;
         }
-        // 快捷方式指向卸载程序（如「卸载 xxx」的快捷方式解析到 unins000.exe）时，
-        // 不应作为应用启动目标，直接跳过。
+        // 快捷方式指向卸载程序（部分厂商把开始菜单项错误地指向 unins.exe）时，
+        // 从卸载器所在目录及其上一级反推主程序；反推不到才跳过。
         if is_uninstaller_path(&exe) {
-            return ShortcutTarget::Missing;
+            let fallback = Path::new(&exe).parent().and_then(|dir| {
+                pick_main_executable(dir, display_name, None).or_else(|| {
+                    dir.parent()
+                        .filter(|parent| !is_generic_install_dir(parent))
+                        .and_then(|parent| pick_main_executable(parent, display_name, None))
+                })
+            });
+            let Some(fallback) = fallback else {
+                return ShortcutTarget::Missing;
+            };
+            let workdir = Path::new(&fallback)
+                .parent()
+                .map(|parent| parent.to_string_lossy().to_string());
+            return ShortcutTarget::Resolved(LaunchTarget::Executable {
+                path: fallback,
+                args: None,
+                workdir,
+            });
         }
 
         let mut args_buffer = vec![0u16; 8192];
@@ -756,15 +877,6 @@ fn collect_registry() -> Vec<RegistryApp> {
                 .map(|value| clean_path(&value))
                 .filter(|value| !value.is_empty());
             let display_icon: Option<String> = key.get_value("DisplayIcon").ok();
-            let mut exe = display_icon.as_deref().and_then(display_icon_to_exe);
-            // DisplayIcon 常指向卸载程序（unins000.exe / 卸载.exe 等）而不是主程序，
-            // 点这样的条目会直接弹出卸载确认框。此时尝试从 InstallLocation 里挑主程序，
-            // 挑不到就把 exe 置空（该注册表项只用于补充信息，不作为启动入口）。
-            if exe.as_ref().is_some_and(|path| is_uninstaller_path(path)) {
-                exe = install_location
-                    .as_deref()
-                    .and_then(|dir| pick_main_executable(Path::new(dir), &name));
-            }
             let publisher = key
                 .get_value::<String, _>("Publisher")
                 .ok()
@@ -775,6 +887,22 @@ fn collect_registry() -> Vec<RegistryApp> {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty());
+
+            let icon_exe = display_icon.as_deref().and_then(display_icon_to_exe);
+            let mut exe = icon_exe.clone();
+            // DisplayIcon 常指向卸载程序（unins000.exe / 卸载.exe 等）而不是主程序，
+            // 点这样的条目会直接弹出卸载确认框。此时从 InstallLocation、卸载器所在
+            // 目录及其上一级递归反推主程序；反推不到才把 exe 置空，不作为启动入口。
+            if exe.as_ref().is_some_and(|path| is_uninstaller_path(path)) {
+                exe = None;
+            }
+            if exe.is_none() && icon_exe.is_some() {
+                exe = candidate_install_dirs(install_location.as_deref(), icon_exe.as_deref())
+                    .into_iter()
+                    .find_map(|dir| {
+                        pick_main_executable(&dir, &name, publisher.as_deref())
+                    });
+            }
 
             result.push(RegistryApp {
                 name,
