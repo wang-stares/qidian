@@ -400,6 +400,55 @@
   --checkbox-radius: 2px;
 }
 
+/* ── 自定义（调色板由前端内联变量覆盖） ──────────────────────── */
+[data-theme="custom"] {
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+
+  --titlebar-h: 42px;
+  --titlebar-pad-left: 16px;
+  --rail-w: 224px;
+  --rail-margin: 6px 0 6px 6px;
+  --rail-radius: 14px;
+  --rail-item-h: 38px;
+  --rail-item-radius: 10px;
+  --rail-label-size: 11px;
+  --rail-label-spacing: 0.04em;
+  --main-pad-x: 28px;
+  --main-pad-top: 18px;
+  --tile-min: 100px;
+  --tile-h: 112px;
+  --icon-size: 44px;
+  --icon-radius: 12px;
+  --tile-radius: 14px;
+  --gap-grid: 6px;
+  --section-gap: 24px;
+  --search-h: 38px;
+  --search-radius: 999px;
+  --control-radius: 12px;
+  --panel-radius: 18px;
+  --dialog-radius: 20px;
+  --settings-card-radius: 14px;
+  --inspector-inset: 12px;
+  --inspector-w: 308px;
+  --panel-blur: 26px;
+  --tile-border: transparent;
+  --tile-lift: 0px;
+  --view-title-size: 28px;
+  --view-title-weight: 650;
+  --quickbar-radius: 999px;
+  --button-weight: 600;
+  --titlebar-crumb-display: inline-flex;
+  --brand-tag-display: none;
+  --section-line-display: none;
+  --tile-bg: transparent;
+  --tile-shadow: none;
+  --checkbox-radius: 6px;
+}
+
 /* Win11 light */
 [data-theme="win11"][data-mode="light"] {
   --app-bg: rgba(243, 244, 246, 0.87);
@@ -734,6 +783,90 @@
   --skeleton-a: rgba(255, 255, 255, 0.035);
   --skeleton-b: rgba(255, 255, 255, 0.075);
   --wc-hover: rgba(255, 255, 255, 0.075);
+}
+
+/* Custom light（兜底；实际颜色由前端内联变量覆盖） */
+[data-theme="custom"][data-mode="light"] {
+  --app-bg: rgba(242, 243, 245, 0.94);
+  --app-tint: rgba(255, 255, 255, 0.3);
+  --bg-warm: color-mix(in srgb, var(--accent) 4%, transparent);
+  --panel: rgba(255, 255, 255, 0.78);
+  --panel-strong: rgba(255, 255, 255, 0.92);
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(0, 0, 0, 0.04);
+  --surface-3: rgba(0, 0, 0, 0.07);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.86);
+  --tile-active: #ffffff;
+  --stroke: rgba(0, 0, 0, 0.07);
+  --stroke-2: rgba(0, 0, 0, 0.14);
+  --divider: rgba(0, 0, 0, 0.06);
+  --text: #17181b;
+  --text-2: #5a5c62;
+  --text-3: #8b8d93;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(0, 0, 0, 0.045);
+  --hover-strong: rgba(0, 0, 0, 0.08);
+  --dialog-bg: #fafbfc;
+  --flyout-bg: rgba(255, 255, 255, 0.95);
+  --toast-bg: rgba(22, 22, 24, 0.95);
+  --toast-text: #f7f7f9;
+  --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.1);
+  --success: #0f7b0f;
+  --warning: #9d5d00;
+  --window-border: rgba(255, 255, 255, 0.55);
+  --shadow-tile: none;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 30px rgba(0, 0, 0, 0.06);
+  --shadow-flyout: 0 18px 46px rgba(0, 0, 0, 0.18);
+  --shadow-dialog: 0 34px 84px rgba(0, 0, 0, 0.26);
+  --shadow-window: 0 32px 90px rgba(0, 0, 0, 0.34);
+  --skeleton-a: rgba(0, 0, 0, 0.04);
+  --skeleton-b: rgba(0, 0, 0, 0.08);
+  --wc-hover: rgba(0, 0, 0, 0.06);
+}
+
+/* Custom dark */
+[data-theme="custom"][data-mode="dark"] {
+  --app-bg: rgba(19, 19, 21, 0.94);
+  --app-tint: rgba(255, 255, 255, 0.02);
+  --bg-warm: color-mix(in srgb, var(--accent) 6%, transparent);
+  --panel: rgba(31, 31, 34, 0.78);
+  --panel-strong: rgba(38, 38, 42, 0.92);
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-solid: #1f1f22;
+  --surface-2: rgba(255, 255, 255, 0.055);
+  --surface-3: rgba(255, 255, 255, 0.1);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.075);
+  --tile-active: rgba(255, 255, 255, 0.12);
+  --stroke: rgba(255, 255, 255, 0.08);
+  --stroke-2: rgba(255, 255, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.07);
+  --text: #f2f2f4;
+  --text-2: #b6b7bd;
+  --text-3: #86878d;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(255, 255, 255, 0.06);
+  --hover-strong: rgba(255, 255, 255, 0.1);
+  --dialog-bg: #1b1b1e;
+  --flyout-bg: rgba(32, 32, 35, 0.95);
+  --toast-bg: rgba(244, 244, 246, 0.96);
+  --toast-text: #161618;
+  --danger: #ff9a8d;
+  --danger-soft: rgba(255, 120, 110, 0.12);
+  --success: #6ddcb2;
+  --warning: #ffb067;
+  --window-border: rgba(255, 255, 255, 0.08);
+  --shadow-tile: none;
+  --shadow-panel: 0 2px 6px rgba(0, 0, 0, 0.22), 0 18px 40px rgba(0, 0, 0, 0.24);
+  --shadow-flyout: 0 18px 46px rgba(0, 0, 0, 0.4);
+  --shadow-dialog: 0 34px 84px rgba(0, 0, 0, 0.6);
+  --shadow-window: 0 32px 90px rgba(0, 0, 0, 0.66);
+  --skeleton-a: rgba(255, 255, 255, 0.04);
+  --skeleton-b: rgba(255, 255, 255, 0.08);
+  --wc-hover: rgba(255, 255, 255, 0.07);
 }
 
 [data-density="compact"] {

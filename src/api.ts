@@ -94,6 +94,19 @@ function normalizeSettings(raw: unknown): Settings {
           )
         : {},
     hidden: Array.isArray(incoming.hidden) ? [...incoming.hidden] : [],
+    customPalette:
+      incoming.customPalette && typeof incoming.customPalette === "object"
+        ? { ...DEFAULT_SETTINGS.customPalette, ...incoming.customPalette }
+        : { ...DEFAULT_SETTINGS.customPalette },
+    wallpaperLibrary: Array.isArray(incoming.wallpaperLibrary)
+      ? incoming.wallpaperLibrary
+          .filter(
+            (asset) =>
+              Boolean(asset) && typeof asset === "object" && typeof asset.id === "string",
+          )
+          .slice(-12)
+          .map((asset) => ({ ...asset }))
+      : [],
     customThemes: Array.isArray(incoming.customThemes)
       ? incoming.customThemes
           .filter(
@@ -104,7 +117,19 @@ function normalizeSettings(raw: unknown): Settings {
               typeof (theme as CustomTheme).name === "string",
           )
           .slice(-12)
-          .map((theme) => ({ ...theme }))
+          .map((theme) => ({
+            ...theme,
+            wallpaperFit: theme.wallpaperFit ?? "cover",
+            wallpaperX:
+              typeof theme.wallpaperX === "number" ? theme.wallpaperX : 50,
+            wallpaperY:
+              typeof theme.wallpaperY === "number" ? theme.wallpaperY : 50,
+            wallpaperZoom:
+              typeof theme.wallpaperZoom === "number" ? theme.wallpaperZoom : 100,
+            wallpaperAsset:
+              typeof theme.wallpaperAsset === "string" ? theme.wallpaperAsset : "",
+            palette: { ...DEFAULT_SETTINGS.customPalette, ...(theme.palette ?? {}) },
+          }))
       : [],
   };
   return merged;
@@ -126,6 +151,26 @@ function saveMockSettings(settings: Settings): void {
     localStorage.setItem(MOCK_KEY, JSON.stringify(settings));
   } catch {
     // 存储不可用时保持内存态
+  }
+}
+
+const MOCK_WALLPAPER_KEY = "qidian.wallpapers.v1";
+
+function readMockWallpapers(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(MOCK_WALLPAPER_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeMockWallpapers(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(MOCK_WALLPAPER_KEY, JSON.stringify(map));
+  } catch {
+    // 浏览器预览配额不足时忽略，桌面端由后端写文件
   }
 }
 
@@ -246,6 +291,25 @@ const mockBridge = {
 
   async openDataDir(): Promise<void> {
     await sleep(40);
+  },
+
+  async saveWallpaper(id: string, data: string): Promise<number> {
+    const map = readMockWallpapers();
+    map[id] = data;
+    writeMockWallpapers(map);
+    await sleep(40);
+    return Math.round(data.length * 0.75);
+  },
+
+  async readWallpaper(id: string): Promise<string> {
+    return readMockWallpapers()[id] ?? "";
+  },
+
+  async deleteWallpaper(id: string): Promise<void> {
+    const map = readMockWallpapers();
+    delete map[id];
+    writeMockWallpapers(map);
+    await sleep(20);
   },
 
   async listStartup(_force = false): Promise<StartupScan> {
@@ -547,6 +611,18 @@ const tauriBridge = {
 
   openDataDir(): Promise<void> {
     return tauriInvoke<void>("open_data_dir");
+  },
+
+  saveWallpaper(id: string, data: string): Promise<number> {
+    return tauriInvoke<number>("save_wallpaper", { id, data });
+  },
+
+  readWallpaper(id: string): Promise<string> {
+    return tauriInvoke<string>("read_wallpaper", { id });
+  },
+
+  deleteWallpaper(id: string): Promise<void> {
+    return tauriInvoke<void>("delete_wallpaper", { id });
   },
 
   listStartup(force = false): Promise<StartupScan> {

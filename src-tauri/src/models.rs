@@ -157,6 +157,60 @@ pub struct TerminateReport {
     pub failed: Vec<TerminateFailure>,
 }
 
+/// 自定义主题调色板：浅色 / 深色分别设置背景、面板与文字色，并附带形状参数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomPalette {
+    pub bg_light: String,
+    pub bg_dark: String,
+    pub panel_light: String,
+    pub panel_dark: String,
+    pub text_light: String,
+    pub text_dark: String,
+    pub radius: u32,
+    pub panel_opacity: u32,
+    pub blur: u32,
+    pub icon_size: u32,
+}
+
+impl Default for CustomPalette {
+    fn default() -> Self {
+        Self {
+            bg_light: "#f2f3f5".to_string(),
+            bg_dark: "#131315".to_string(),
+            panel_light: "#ffffff".to_string(),
+            panel_dark: "#1f1f22".to_string(),
+            text_light: "#17181b".to_string(),
+            text_dark: "#f2f2f4".to_string(),
+            radius: 12,
+            panel_opacity: 78,
+            blur: 26,
+            icon_size: 44,
+        }
+    }
+}
+
+/// 用户上传的壁纸元数据；像素文件保存在数据目录的 wallpapers 下。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WallpaperAsset {
+    pub id: String,
+    pub name: String,
+    pub added_at: u64,
+    pub bytes: u64,
+}
+
+impl Default for WallpaperAsset {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            added_at: 0,
+            bytes: 0,
+        }
+    }
+}
+
 /// 用户保存的外观方案：主题、配色、壁纸与形状参数一次性还原。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -169,6 +223,11 @@ pub struct CustomTheme {
     pub custom_accent: String,
     pub wallpaper: String,
     pub wallpaper_image: String,
+    pub wallpaper_asset: String,
+    pub wallpaper_fit: String,
+    pub wallpaper_x: u32,
+    pub wallpaper_y: u32,
+    pub wallpaper_zoom: u32,
     pub wallpaper_opacity: u32,
     pub wallpaper_blur: u32,
     pub wallpaper_dim: u32,
@@ -176,6 +235,7 @@ pub struct CustomTheme {
     pub blur: String,
     pub color_mode: String,
     pub density: String,
+    pub palette: CustomPalette,
 }
 
 impl Default for CustomTheme {
@@ -189,6 +249,11 @@ impl Default for CustomTheme {
             custom_accent: "#1b62d6".to_string(),
             wallpaper: "none".to_string(),
             wallpaper_image: String::new(),
+            wallpaper_asset: String::new(),
+            wallpaper_fit: "cover".to_string(),
+            wallpaper_x: 50,
+            wallpaper_y: 50,
+            wallpaper_zoom: 100,
             wallpaper_opacity: 60,
             wallpaper_blur: 0,
             wallpaper_dim: 0,
@@ -196,6 +261,7 @@ impl Default for CustomTheme {
             blur: "standard".to_string(),
             color_mode: "system".to_string(),
             density: "cozy".to_string(),
+            palette: CustomPalette::default(),
         }
     }
 }
@@ -214,9 +280,16 @@ pub struct Settings {
     pub blur: String,
     pub wallpaper: String,
     pub wallpaper_image: String,
+    pub wallpaper_asset: String,
+    pub wallpaper_library: Vec<WallpaperAsset>,
+    pub wallpaper_fit: String,
+    pub wallpaper_x: u32,
+    pub wallpaper_y: u32,
+    pub wallpaper_zoom: u32,
     pub wallpaper_opacity: u32,
     pub wallpaper_blur: u32,
     pub wallpaper_dim: u32,
+    pub custom_palette: CustomPalette,
     pub custom_themes: Vec<CustomTheme>,
     pub low_power: bool,
     pub scan_uwp: bool,
@@ -264,9 +337,16 @@ impl Default for Settings {
             blur: "standard".to_string(),
             wallpaper: "none".to_string(),
             wallpaper_image: String::new(),
+            wallpaper_asset: String::new(),
+            wallpaper_library: Vec::new(),
+            wallpaper_fit: "cover".to_string(),
+            wallpaper_x: 50,
+            wallpaper_y: 50,
+            wallpaper_zoom: 100,
             wallpaper_opacity: 60,
             wallpaper_blur: 0,
             wallpaper_dim: 0,
+            custom_palette: CustomPalette::default(),
             custom_themes: Vec::new(),
             low_power: false,
             scan_uwp: true,

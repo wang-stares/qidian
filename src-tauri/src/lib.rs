@@ -394,6 +394,21 @@ fn open_data_dir(state: State<'_, AppState>) -> Result<(), String> {
     launch::open_folder(&state.paths.base)
 }
 
+#[tauri::command]
+fn save_wallpaper(state: State<'_, AppState>, id: String, data: String) -> Result<u64, String> {
+    store::save_wallpaper(&state.paths, &id, &data)
+}
+
+#[tauri::command]
+fn read_wallpaper(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    store::read_wallpaper(&state.paths, &id)
+}
+
+#[tauri::command]
+fn delete_wallpaper(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    store::delete_wallpaper(&state.paths, &id)
+}
+
 #[cfg(windows)]
 fn set_memory_level(window: &tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -1644,6 +1659,9 @@ pub fn run() {
             reset_settings,
             clear_cache,
             open_data_dir,
+            save_wallpaper,
+            read_wallpaper,
+            delete_wallpaper,
             list_startup,
             set_startup_enabled,
             list_processes,

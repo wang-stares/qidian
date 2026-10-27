@@ -30,6 +30,7 @@ import {
   THEME_OPTIONS,
   THEME_PRESETS,
   WALLPAPERS,
+  WALLPAPER_FITS,
   categoryColor,
   categoryGlyph,
   cloneSettings,
@@ -45,6 +46,7 @@ import type {
   ColorMode,
   CornerStyle,
   BlurLevel,
+  CustomPalette,
   CustomTheme,
   Density,
   DiagReport,
@@ -75,6 +77,8 @@ import type {
   StartupItem,
   StartupSource,
   ThemeId,
+  WallpaperAsset,
+  WallpaperFit,
   WallpaperId,
   UninstallReport,
   ViewMode,
@@ -197,6 +201,10 @@ interface UiState {
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   customThemeName: string;
+  /** 当前自定义壁纸的 data URL（来自壁纸库或旧配置），仅运行时使用。 */
+  wallpaperData: string;
+  /** 壁纸库缩略图缓存：asset id → data URL。 */
+  wallpaperThumbs: Record<string, string>;
   workspace: WorkspaceTab;
   editingCategoryId: string | null;
   pendingCategoryDelete: string | null;
@@ -335,6 +343,8 @@ const state: UiState = {
   settingsOpen: false,
   settingsTab: "theme",
   customThemeName: "",
+  wallpaperData: "",
+  wallpaperThumbs: {},
   workspace: "launcher",
   editingCategoryId: null,
   pendingCategoryDelete: null,
@@ -464,6 +474,56 @@ const APP_VERSION = __APP_VERSION__;
 /** 自定义强调色校验；自定义壁纸在设置文件中的字符上限。 */
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const WALLPAPER_MAX_CHARS = 1_200_000;
+/** 自定义主题通过内联变量覆盖的主题令牌；切换回内置风格时需要全部清除。
+    必须声明在 `void boot()` 之前：首次 applyAppearance 会同步读取它。 */
+const CUSTOM_THEME_VARS = [
+  "--app-bg",
+  "--app-tint",
+  "--panel",
+  "--panel-strong",
+  "--surface",
+  "--surface-solid",
+  "--surface-2",
+  "--surface-3",
+  "--tile-surface",
+  "--tile-hover",
+  "--tile-active",
+  "--stroke",
+  "--stroke-2",
+  "--divider",
+  "--text",
+  "--text-2",
+  "--text-3",
+  "--hover",
+  "--hover-strong",
+  "--dialog-bg",
+  "--flyout-bg",
+  "--toast-bg",
+  "--toast-text",
+  "--window-border",
+  "--shadow-tile",
+  "--shadow-panel",
+  "--shadow-flyout",
+  "--shadow-dialog",
+  "--shadow-window",
+  "--skeleton-a",
+  "--skeleton-b",
+  "--wc-hover",
+  "--wallpaper-scrim",
+  "--icon-size",
+  "--panel-blur",
+  "--tile-radius",
+  "--icon-radius",
+  "--search-radius",
+  "--control-radius",
+  "--panel-radius",
+  "--dialog-radius",
+  "--settings-card-radius",
+  "--quickbar-radius",
+  "--rail-radius",
+  "--rail-item-radius",
+  "--checkbox-radius",
+];
 const ICON_BATCH_SIZE = 40;
 /// 允许两批图标同时在途：后端每批内部已并行，滚动时后一批不必等前一批返回。
 const ICON_MAX_INFLIGHT = 2;
@@ -618,6 +678,7 @@ async function boot(): Promise<void> {
     state.loading = false;
     applyAppearance();
     renderAll();
+    void syncWallpaperData();
     void loadModules();
     window.setTimeout(() => void pruneMissingApps(true), 1500);
     scheduleWarmIcons(6000);
@@ -686,15 +747,141 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
+function hexToRgb(hex: string): [number, number, number] | null {
+  if (!HEX_COLOR.test(hex)) return null;
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+function rgbaFromHex(hex: string, alpha: number): string {
+  const rgb = hexToRgb(hex) ?? [0, 0, 0];
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${Math.min(1, Math.max(0, alpha))})`;
+}
+
+/** ratio 表示第一个颜色所占比例（0-1）。 */
+function mixHex(a: string, b: string, ratio: number): string {
+  const first = hexToRgb(a) ?? [0, 0, 0];
+  const second = hexToRgb(b) ?? [255, 255, 255];
+  const weight = Math.min(1, Math.max(0, ratio));
+  const channels = first.map((value, index) =>
+    Math.round(value * weight + second[index] * (1 - weight)),
+  );
+  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
+}
+
 /** 按相对亮度挑选强调色上的前景色，保证自定义色也满足对比度。 */
 function accentForeground(hex: string): string {
-  if (!HEX_COLOR.test(hex)) return "#ffffff";
-  const channel = (offset: number) => {
-    const raw = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+  const rgb = hexToRgb(hex);
+  if (!rgb) return "#ffffff";
+  const channel = (value: number) => {
+    const raw = value / 255;
     return raw <= 0.03928 ? raw / 12.92 : ((raw + 0.055) / 1.055) ** 2.4;
   };
-  const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  const luminance =
+    0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
   return luminance > 0.42 ? "#0b0b0c" : "#ffffff";
+}
+
+function applyCustomPalette(palette: CustomPalette): void {
+  const dark = resolvedMode() === "dark";
+  const bg = dark ? palette.bgDark : palette.bgLight;
+  const panel = dark ? palette.panelDark : palette.panelLight;
+  const text = dark ? palette.textDark : palette.textLight;
+  const opacity = clampNumber(palette.panelOpacity, 30, 100) / 100;
+  const radius = clampNumber(palette.radius, 0, 30);
+  const iconSize = clampNumber(palette.iconSize, 28, 64);
+  const blur = clampNumber(palette.blur, 0, 48);
+  const set = (key: string, value: string) => els.app.style.setProperty(key, value);
+  const radiusPx = (value: number) => `${Math.round(value)}px`;
+
+  set("--app-bg", rgbaFromHex(bg, 0.94));
+  set("--app-tint", rgbaFromHex("#ffffff", dark ? 0.02 : 0.3));
+  set("--panel", rgbaFromHex(panel, opacity));
+  set("--panel-strong", rgbaFromHex(panel, Math.min(1, opacity + 0.14)));
+  set("--surface", rgbaFromHex(panel, Math.min(1, Math.max(0.2, opacity * 0.9))));
+  set("--surface-solid", panel);
+  set("--surface-2", rgbaFromHex(text, dark ? 0.055 : 0.04));
+  set("--surface-3", rgbaFromHex(text, dark ? 0.1 : 0.07));
+  set("--tile-surface", "transparent");
+  set("--tile-hover", rgbaFromHex(panel, Math.min(1, opacity + 0.08)));
+  set("--tile-active", rgbaFromHex(panel, Math.min(1, opacity + 0.16)));
+  set("--stroke", rgbaFromHex(text, 0.09));
+  set("--stroke-2", rgbaFromHex(text, 0.17));
+  set("--divider", rgbaFromHex(text, 0.075));
+  set("--text", text);
+  set("--text-2", mixHex(text, bg, 0.72));
+  set("--text-3", mixHex(text, bg, 0.46));
+  set("--hover", rgbaFromHex(text, dark ? 0.06 : 0.045));
+  set("--hover-strong", rgbaFromHex(text, dark ? 0.1 : 0.08));
+  set("--dialog-bg", mixHex(panel, bg, 0.82));
+  set("--flyout-bg", rgbaFromHex(panel, 0.95));
+  set("--toast-bg", dark ? "rgba(244, 244, 246, 0.96)" : "rgba(22, 22, 24, 0.95)");
+  set("--toast-text", dark ? "#161618" : "#f7f7f9");
+  set("--window-border", rgbaFromHex("#ffffff", dark ? 0.08 : 0.55));
+  set("--shadow-tile", "none");
+  set(
+    "--shadow-panel",
+    dark
+      ? "0 2px 6px rgba(0, 0, 0, 0.22), 0 18px 40px rgba(0, 0, 0, 0.24)"
+      : "0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 30px rgba(0, 0, 0, 0.06)",
+  );
+  set("--shadow-flyout", "0 18px 46px rgba(0, 0, 0, 0.22)");
+  set("--shadow-dialog", "0 34px 84px rgba(0, 0, 0, 0.3)");
+  set("--shadow-window", "0 32px 90px rgba(0, 0, 0, 0.36)");
+  set("--skeleton-a", rgbaFromHex(text, 0.04));
+  set("--skeleton-b", rgbaFromHex(text, 0.08));
+  set("--wc-hover", rgbaFromHex(text, 0.06));
+  set("--wallpaper-scrim", rgbaFromHex(bg, 0.55));
+  set("--icon-size", `${iconSize}px`);
+  set("--panel-blur", `${blur}px`);
+  set("--tile-radius", radiusPx(radius));
+  set("--icon-radius", radiusPx(radius * 0.8));
+  set("--search-radius", radiusPx(Math.min(999, radius * 2.4)));
+  set("--control-radius", radiusPx(Math.max(2, radius * 0.9)));
+  set("--panel-radius", radiusPx(radius * 1.5));
+  set("--dialog-radius", radiusPx(radius * 1.6));
+  set("--settings-card-radius", radiusPx(radius * 1.1));
+  set("--quickbar-radius", radiusPx(Math.min(999, radius * 2)));
+  set("--rail-radius", radiusPx(radius * 1.4));
+  set("--rail-item-radius", radiusPx(radius * 0.9));
+  set("--checkbox-radius", radiusPx(Math.max(2, radius * 0.45)));
+}
+
+function applyWallpaper(settings: Settings): void {
+  const image = state.wallpaperData || settings.wallpaperImage;
+  const layer = els.app.style;
+  if (settings.wallpaper === "custom" && image) {
+    layer.setProperty("--wallpaper-image", `url("${image}")`);
+    const size =
+      settings.wallpaperFit === "contain"
+        ? "contain"
+        : settings.wallpaperFit === "tile"
+          ? "auto"
+          : settings.wallpaperFit === "stretch"
+            ? "100% 100%"
+            : "cover";
+    layer.setProperty("--wallpaper-size", size);
+    layer.setProperty(
+      "--wallpaper-repeat",
+      settings.wallpaperFit === "tile" ? "repeat" : "no-repeat",
+    );
+    layer.setProperty("--wallpaper-x", `${clampNumber(settings.wallpaperX, 0, 100)}%`);
+    layer.setProperty("--wallpaper-y", `${clampNumber(settings.wallpaperY, 0, 100)}%`);
+    layer.setProperty(
+      "--wallpaper-zoom",
+      String(clampNumber(settings.wallpaperZoom, 100, 200) / 100),
+    );
+    return;
+  }
+  layer.removeProperty("--wallpaper-image");
+  layer.removeProperty("--wallpaper-size");
+  layer.removeProperty("--wallpaper-repeat");
+  layer.removeProperty("--wallpaper-x");
+  layer.removeProperty("--wallpaper-y");
+  layer.removeProperty("--wallpaper-zoom");
 }
 
 function applyAppearance(): void {
@@ -721,14 +908,22 @@ function applyAppearance(): void {
     els.app.style.removeProperty("--accent-fg-custom");
   }
 
-  els.app.style.setProperty("--wallpaper-opacity", String(clampNumber(settings.wallpaperOpacity, 0, 100) / 100));
-  els.app.style.setProperty("--wallpaper-blur", `${clampNumber(settings.wallpaperBlur, 0, 40)}px`);
-  els.app.style.setProperty("--wallpaper-dim", String(clampNumber(settings.wallpaperDim, 0, 70) / 100));
-  if (settings.wallpaper === "custom" && settings.wallpaperImage) {
-    els.app.style.setProperty("--wallpaper-image", `url("${settings.wallpaperImage}")`);
+  if (settings.theme === "custom") {
+    applyCustomPalette(settings.customPalette);
   } else {
-    els.app.style.removeProperty("--wallpaper-image");
+    for (const key of CUSTOM_THEME_VARS) els.app.style.removeProperty(key);
   }
+
+  els.app.style.setProperty(
+    "--wallpaper-opacity",
+    String(clampNumber(settings.wallpaperOpacity, 20, 100) / 100),
+  );
+  els.app.style.setProperty("--wallpaper-blur", `${clampNumber(settings.wallpaperBlur, 0, 40)}px`);
+  els.app.style.setProperty(
+    "--wallpaper-dim",
+    String(clampNumber(settings.wallpaperDim, 0, 70) / 100),
+  );
+  applyWallpaper(settings);
 
   const current = THEME_OPTIONS.find((theme) => theme.id === settings.theme) ?? THEME_OPTIONS[0];
   els.themeQuickLabel.textContent = current.short;
@@ -736,6 +931,58 @@ function applyAppearance(): void {
   if (themeBtn) {
     themeBtn.title = `当前：${current.name}（${current.note}），点击切换`;
   }
+}
+
+/** 把设置里的壁纸来源（壁纸库 id 或旧版内联图片）同步到运行时缓存。 */
+async function syncWallpaperData(): Promise<void> {
+  const settings = state.settings;
+  if (settings.wallpaperAsset) {
+    const cached = state.wallpaperThumbs[settings.wallpaperAsset];
+    if (cached) {
+      state.wallpaperData = cached;
+      applyAppearance();
+      return;
+    }
+    try {
+      const data = await api.readWallpaper(settings.wallpaperAsset);
+      if (data) {
+        state.wallpaperThumbs = { ...state.wallpaperThumbs, [settings.wallpaperAsset]: data };
+        state.wallpaperData = data;
+      } else {
+        state.wallpaperData = "";
+      }
+    } catch {
+      state.wallpaperData = "";
+    }
+    applyAppearance();
+    return;
+  }
+  state.wallpaperData = settings.wallpaperImage ?? "";
+  applyAppearance();
+}
+
+/** 打开主题页时补齐壁纸库缩略图，只请求尚未缓存的资源。 */
+async function ensureWallpaperThumbs(): Promise<void> {
+  const assets = state.settings.wallpaperLibrary ?? [];
+  const missing = assets.filter((asset) => !state.wallpaperThumbs[asset.id]);
+  if (missing.length === 0) return;
+  const loaded = await Promise.all(
+    missing.map(async (asset) => {
+      try {
+        return [asset.id, await api.readWallpaper(asset.id)] as const;
+      } catch {
+        return [asset.id, ""] as const;
+      }
+    }),
+  );
+  let changed = false;
+  for (const [id, data] of loaded) {
+    if (data && !state.wallpaperThumbs[id]) {
+      state.wallpaperThumbs = { ...state.wallpaperThumbs, [id]: data };
+      changed = true;
+    }
+  }
+  if (changed) refreshActive();
 }
 
 darkMedia.addEventListener("change", () => {
@@ -2029,6 +2276,7 @@ function syncCloseHint(trayAvailable: boolean): void {
 function prepareTab(tab: SettingsTab): void {
   if (tab === "plugins" && !state.modulesLoaded) void loadModules();
   if (tab === "boot" && moduleReady("boot")) loadBootState();
+  if (tab === "theme") void ensureWallpaperThumbs();
 }
 
 function bootSettings(): string {
@@ -2145,7 +2393,7 @@ function themePresetOption(preset: (typeof THEME_PRESETS)[number]): string {
   </button>`;
 }
 
-type WallpaperSliderKey = "opacity" | "blur" | "dim";
+type WallpaperSliderKey = "opacity" | "blur" | "dim" | "x" | "y" | "zoom";
 
 function wallpaperRangeRow(
   title: string,
@@ -2168,7 +2416,8 @@ function wallpaperRangeRow(
 function wallpaperOption(item: (typeof WALLPAPERS)[number]): string {
   const settings = state.settings;
   const selected = settings.wallpaper === item.id;
-  const customImage = item.id === "custom" && Boolean(settings.wallpaperImage);
+  const customImage =
+    item.id === "custom" ? state.wallpaperData || settings.wallpaperImage : "";
   const previewClass = [
     "wallpaper-preview",
     item.id === "custom" ? "is-custom" : `wp-${item.id}`,
@@ -2176,7 +2425,7 @@ function wallpaperOption(item: (typeof WALLPAPERS)[number]): string {
   ]
     .filter(Boolean)
     .join(" ");
-  const style = customImage ? ` style="background-image:url(&quot;${settings.wallpaperImage}&quot;)"` : "";
+  const style = customImage ? ` style="background-image:url(&quot;${customImage}&quot;)"` : "";
   const inner = item.id === "custom" && !customImage ? icon("plus") : "";
   return `<button class="wallpaper-option${selected ? " is-selected" : ""}" data-settings-action="wallpaper" data-value="${item.id}" aria-pressed="${selected}" data-focus-key="wallpaper-${item.id}">
     <span class="${previewClass}" aria-hidden="true"${style}>${inner}</span>
@@ -2185,29 +2434,129 @@ function wallpaperOption(item: (typeof WALLPAPERS)[number]): string {
   </button>`;
 }
 
+function wallpaperAssetCard(asset: WallpaperAsset): string {
+  const active =
+    state.settings.wallpaper === "custom" && state.settings.wallpaperAsset === asset.id;
+  const thumb = state.wallpaperThumbs[asset.id] ?? "";
+  const style = thumb ? ` style="background-image:url(&quot;${thumb}&quot;)"` : "";
+  const size = asset.bytes > 0 ? `${Math.max(1, Math.round(asset.bytes / 1024))} KB` : "本地文件";
+  return `<div class="wallpaper-asset${active ? " is-active" : ""}">
+    <button class="wallpaper-asset-pick" data-settings-action="wallpaper-asset" data-id="${
+      asset.id
+    }" data-focus-key="wallpaper-asset-${asset.id}" title="${escapeHtml(asset.name)}">
+      <span class="wallpaper-asset-thumb${thumb ? " has-image" : ""}"${style}>${
+        thumb ? "" : icon("plus")
+      }</span>
+      <span class="wallpaper-asset-name">${escapeHtml(asset.name)}</span>
+      <span class="wallpaper-asset-size">${size}</span>
+    </button>
+    <button class="wallpaper-asset-del" data-settings-action="wallpaper-asset-delete" data-id="${
+      asset.id
+    }" data-focus-key="wallpaper-asset-del-${asset.id}" title="从壁纸库删除">${icon("close")}</button>
+  </div>`;
+}
+
 function wallpaperPanel(): string {
   const settings = state.settings;
+  const library = settings.wallpaperLibrary ?? [];
+  const customActive = settings.wallpaper === "custom";
   return `<div class="settings-section">
       <h3 class="settings-section-title">壁纸</h3>
-      <p class="settings-section-desc">壁纸铺在主题氛围层下方，可与任意界面风格、配色自由组合；自定义图片只保存在本机设置里。</p>
+      <p class="settings-section-desc">壁纸铺在主题氛围层下方，可与任意界面风格、配色自由组合；上传的图片保存在本机数据目录。</p>
       <div class="wallpaper-options">${WALLPAPERS.map(wallpaperOption).join("")}</div>
       <div class="wallpaper-actions">
         <button data-settings-action="wallpaper-upload" data-focus-key="wallpaper-upload">${icon(
-          "folder",
-        )}选择本地图片</button>
-        ${
-          settings.wallpaperImage
-            ? `<button class="is-danger" data-settings-action="wallpaper-clear" data-focus-key="wallpaper-clear">${icon(
-                "trash",
-              )}移除图片</button>`
-            : ""
-        }
-        <input type="file" accept="image/*" hidden data-wallpaper-file />
+          "plus",
+        )}上传图片到壁纸库</button>
+        <input type="file" accept="image/*" multiple hidden data-wallpaper-file />
       </div>
+    </div>
+    <div class="settings-section">
+      <h3 class="settings-section-title">壁纸库</h3>
+      <p class="settings-section-desc">最多保留 12 张，点缩略图切换当前壁纸，右上角 × 删除；文件存放在数据目录的 wallpapers 文件夹。</p>
+      <div class="wallpaper-library">${
+        library.length === 0
+          ? `<div class="wallpaper-library-empty">还没有上传过壁纸，点上方「上传图片到壁纸库」添加。</div>`
+          : library.map(wallpaperAssetCard).join("")
+      }</div>
+    </div>
+    ${
+      customActive
+        ? `<div class="settings-section">
+      <h3 class="settings-section-title">图片壁纸调节</h3>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">铺放方式</div><div class="setting-desc">填充会裁切边缘，适应会完整显示，平铺适合纹理图。</div></div>
+          <div class="setting-control"><div class="chips">${WALLPAPER_FITS.map(
+            (fit) =>
+              `<button class="chip${settings.wallpaperFit === fit.id ? " is-active" : ""}" data-settings-action="wallpaper-fit" data-value="${fit.id}" data-focus-key="wallpaper-fit-${fit.id}">${fit.label}</button>`,
+          ).join("")}</div></div>
+        </div>
+        ${wallpaperRangeRow("水平位置", "x", settings.wallpaperX, 0, 100, "%", "调整图片的横向焦点，数值越小越偏左。")}
+        ${wallpaperRangeRow("垂直位置", "y", settings.wallpaperY, 0, 100, "%", "调整图片的纵向焦点，数值越小越偏上。")}
+        ${wallpaperRangeRow("缩放", "zoom", settings.wallpaperZoom, 100, 200, "%", "在铺放基础上继续放大，便于裁掉不想显示的部分。")}
+      </div>
+    </div>`
+        : ""
+    }
+    <div class="settings-section">
+      <h3 class="settings-section-title">壁纸强度</h3>
       <div class="settings-card wallpaper-sliders">
         ${wallpaperRangeRow("不透明度", "opacity", settings.wallpaperOpacity, 20, 100, "%", "越低越接近纯色背景，兼顾氛围与可读性。")}
         ${wallpaperRangeRow("模糊", "blur", settings.wallpaperBlur, 0, 40, "px", "柔化照片类壁纸，减少文字干扰；低功耗模式自动关闭。")}
         ${wallpaperRangeRow("明暗", "dim", settings.wallpaperDim, 0, 70, "%", "浅色模式提亮、深色模式压暗，提升内容对比度。")}
+      </div>
+    </div>`;
+}
+
+type PaletteColorKey = "bgLight" | "bgDark" | "panelLight" | "panelDark" | "textLight" | "textDark";
+type PaletteRangeKey = "radius" | "panelOpacity" | "blur" | "iconSize";
+
+function paletteColorField(label: string, key: PaletteColorKey, value: string): string {
+  return `<label class="palette-field"><span>${label}</span><input type="color" data-palette-color="${key}" value="${value}" aria-label="${label}" data-focus-key="palette-${key}" /></label>`;
+}
+
+function paletteRangeRow(
+  title: string,
+  key: PaletteRangeKey,
+  value: number,
+  min: number,
+  max: number,
+  unit: string,
+  desc: string,
+): string {
+  return `<div class="setting-row">
+    <div class="setting-copy"><div class="setting-title">${title}</div><div class="setting-desc">${desc}</div></div>
+    <div class="setting-control">
+      <span class="range-value" data-palette-value="${key}">${value}${unit}</span>
+      <input class="range-input" type="range" min="${min}" max="${max}" step="1" value="${value}" data-palette-range="${key}" data-focus-key="palette-range-${key}" aria-label="${title}" />
+    </div>
+  </div>`;
+}
+
+function palettePanel(): string {
+  const palette = state.settings.customPalette;
+  const active = state.settings.theme === "custom";
+  return `<div class="settings-section">
+      <h3 class="settings-section-title">自定义主题</h3>
+      <p class="settings-section-desc">${
+        active
+          ? "当前使用「自定义」风格，下面的颜色与形状会实时生效。"
+          : "修改任意一项会自动切换到「自定义」风格；浅色与深色分别设置，互不影响。"
+      }</p>
+      <div class="settings-card">
+        <div class="palette-grid">
+          ${paletteColorField("浅色背景", "bgLight", palette.bgLight)}
+          ${paletteColorField("浅色面板", "panelLight", palette.panelLight)}
+          ${paletteColorField("浅色文字", "textLight", palette.textLight)}
+          ${paletteColorField("深色背景", "bgDark", palette.bgDark)}
+          ${paletteColorField("深色面板", "panelDark", palette.panelDark)}
+          ${paletteColorField("深色文字", "textDark", palette.textDark)}
+        </div>
+        ${paletteRangeRow("圆角", "radius", palette.radius, 0, 30, "px", "同时作用于图标、卡片、面板与弹窗。")}
+        ${paletteRangeRow("面板透明度", "panelOpacity", palette.panelOpacity, 30, 100, "%", "侧栏、卡片与设置面板的不透明程度。")}
+        ${paletteRangeRow("面板模糊", "blur", palette.blur, 0, 48, "px", "自定义主题下由这里控制，替代外观页的模糊档位。")}
+        ${paletteRangeRow("图标大小", "iconSize", palette.iconSize, 28, 64, "px", "启动台与列表中的图标尺寸。")}
       </div>
     </div>`;
 }
@@ -2265,7 +2614,7 @@ function themePanel(): string {
   const settings = state.settings;
   return `<div class="settings-section">
       <h3 class="settings-section-title">界面风格</h3>
-      <p class="settings-section-desc">决定布局、圆角与字体：Windows 原生、Miuix 柔和、macOS 通透、Mono 直角。</p>
+      <p class="settings-section-desc">决定布局、圆角与字体：Windows 原生、Miuix 柔和、macOS 通透、Mono 直角，或完全自定义。</p>
       <div class="theme-options">${THEME_OPTIONS.map(themeOption).join("")}</div>
     </div>
     <div class="settings-section">
@@ -2273,6 +2622,7 @@ function themePanel(): string {
       <p class="settings-section-desc">主题决定窗口背景氛围，并同步推荐强调色；应用后仍可在下方单独调整。</p>
       <div class="preset-options">${THEME_PRESETS.map(themePresetOption).join("")}</div>
     </div>
+    ${palettePanel()}
     ${wallpaperPanel()}
     <div class="settings-section">
       <h3 class="settings-section-title">明暗与强调色</h3>
@@ -7055,8 +7405,22 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     case "wallpaper": {
       const wallpaper = actionEl.dataset.value as WallpaperId;
       if (wallpaper === "custom") {
-        if (state.settings.wallpaperImage) patchSettings({ wallpaper });
-        else els.modalLayer.querySelector<HTMLInputElement>("[data-wallpaper-file]")?.click();
+        const library = state.settings.wallpaperLibrary ?? [];
+        const active = state.settings.wallpaperAsset;
+        if (!active && !state.settings.wallpaperImage) {
+          if (library.length === 0) {
+            els.modalLayer.querySelector<HTMLInputElement>("[data-wallpaper-file]")?.click();
+            return;
+          }
+          const latest = library[library.length - 1];
+          patchSettings({ wallpaper: "custom", wallpaperAsset: latest.id });
+          state.wallpaperData = state.wallpaperThumbs[latest.id] ?? "";
+          applyAppearance();
+          void syncWallpaperData();
+          return;
+        }
+        patchSettings({ wallpaper: "custom" });
+        void syncWallpaperData();
         return;
       }
       patchSettings({ wallpaper });
@@ -7065,12 +7429,41 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     case "wallpaper-upload":
       els.modalLayer.querySelector<HTMLInputElement>("[data-wallpaper-file]")?.click();
       return;
-    case "wallpaper-clear": {
-      patchSettings({
-        wallpaperImage: "",
-        wallpaper: state.settings.wallpaper === "custom" ? "none" : state.settings.wallpaper,
-      });
-      showToast("已移除自定义壁纸", "info");
+    case "wallpaper-asset": {
+      const id = actionEl.dataset.id;
+      if (!id) return;
+      patchSettings({ wallpaper: "custom", wallpaperAsset: id, wallpaperImage: "" });
+      state.wallpaperData = state.wallpaperThumbs[id] ?? "";
+      applyAppearance();
+      void syncWallpaperData();
+      return;
+    }
+    case "wallpaper-asset-delete": {
+      const id = actionEl.dataset.id;
+      if (!id) return;
+      const library = (state.settings.wallpaperLibrary ?? []).filter((asset) => asset.id !== id);
+      const wasActive = state.settings.wallpaperAsset === id;
+      const nextThumbs = { ...state.wallpaperThumbs };
+      delete nextThumbs[id];
+      state.wallpaperThumbs = nextThumbs;
+      const settingsPatch: Partial<Settings> = { wallpaperLibrary: library };
+      if (wasActive) {
+        settingsPatch.wallpaperAsset = "";
+        settingsPatch.wallpaper = "none";
+        state.wallpaperData = "";
+      }
+      patchSettings(settingsPatch);
+      applyAppearance();
+      refreshActive();
+      void api.deleteWallpaper(id).catch(() => undefined);
+      showToast("已从壁纸库删除", "info");
+      return;
+    }
+    case "wallpaper-fit": {
+      const fit = actionEl.dataset.value as WallpaperFit;
+      if (fit === "cover" || fit === "contain" || fit === "tile" || fit === "stretch") {
+        patchSettings({ wallpaperFit: fit });
+      }
       return;
     }
     case "custom-theme-save":
@@ -7306,8 +7699,13 @@ function saveCustomTheme(): void {
     accent: settings.accent,
     customAccent: settings.customAccent,
     wallpaper: settings.wallpaper,
-    // 自定义壁纸体积较大，只保留全局一份；应用方案时回落到当前壁纸图片。
+    // 壁纸像素由后端文件保存，方案里只记录引用与调节参数。
     wallpaperImage: "",
+    wallpaperAsset: settings.wallpaperAsset,
+    wallpaperFit: settings.wallpaperFit,
+    wallpaperX: settings.wallpaperX,
+    wallpaperY: settings.wallpaperY,
+    wallpaperZoom: settings.wallpaperZoom,
     wallpaperOpacity: settings.wallpaperOpacity,
     wallpaperBlur: settings.wallpaperBlur,
     wallpaperDim: settings.wallpaperDim,
@@ -7315,6 +7713,7 @@ function saveCustomTheme(): void {
     blur: settings.blur,
     colorMode: settings.colorMode,
     density: settings.density,
+    palette: { ...settings.customPalette },
   };
   const next = [...(settings.customThemes ?? []), theme].slice(-12);
   state.customThemeName = "";
@@ -7327,16 +7726,27 @@ function applyCustomTheme(id: string): void {
   const current = state.settings;
   const theme = (current.customThemes ?? []).find((item) => item.id === id);
   if (!theme) return;
+  const library = current.wallpaperLibrary ?? [];
+  const assetExists = library.some((asset) => asset.id === theme.wallpaperAsset);
+  const wallpaperAsset = assetExists ? theme.wallpaperAsset : "";
   const wallpaperImage = theme.wallpaperImage || current.wallpaperImage;
   const wallpaper =
-    theme.wallpaper === "custom" && !wallpaperImage ? "none" : theme.wallpaper;
+    theme.wallpaper === "custom" && !wallpaperAsset && !wallpaperImage
+      ? "none"
+      : theme.wallpaper;
   patchSettings({
     theme: theme.theme,
     themePreset: theme.preset,
     accent: theme.accent,
     customAccent: theme.customAccent,
+    customPalette: { ...theme.palette },
     wallpaper,
     wallpaperImage,
+    wallpaperAsset,
+    wallpaperFit: theme.wallpaperFit,
+    wallpaperX: theme.wallpaperX,
+    wallpaperY: theme.wallpaperY,
+    wallpaperZoom: theme.wallpaperZoom,
     wallpaperOpacity: theme.wallpaperOpacity,
     wallpaperBlur: theme.wallpaperBlur,
     wallpaperDim: theme.wallpaperDim,
@@ -7345,42 +7755,78 @@ function applyCustomTheme(id: string): void {
     colorMode: theme.colorMode,
     density: theme.density,
   });
+  void syncWallpaperData();
   refreshActive();
   showToast(`已应用主题「${theme.name}」`, "info");
 }
 
-/** 自定义壁纸在前端压缩后写入设置，超限则拒绝。 */
-async function importWallpaper(file: File): Promise<void> {
-  if (!file.type.startsWith("image/")) {
+/** 压缩到最长边 2560 × 1600，并按体积自动降质，最终以 JPEG data URL 返回。 */
+async function compressWallpaper(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 2560 / bitmap.width, 1600 / bitmap.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("无法创建画布");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  let quality = 0.86;
+  let dataUrl = canvas.toDataURL("image/jpeg", quality);
+  while (dataUrl.length > WALLPAPER_MAX_CHARS && quality > 0.42) {
+    quality -= 0.08;
+    dataUrl = canvas.toDataURL("image/jpeg", quality);
+  }
+  if (dataUrl.length > WALLPAPER_MAX_CHARS) throw new Error("图片压缩后仍超出大小限制");
+  return dataUrl;
+}
+
+/** 支持一次上传多张：逐张压缩、写入后端，最后激活最后一张。 */
+async function importWallpapers(files: File[]): Promise<void> {
+  const images = files.filter((file) => file.type.startsWith("image/"));
+  if (images.length === 0) {
     showToast("请选择图片文件", "error");
     return;
   }
-  try {
-    const bitmap = await createImageBitmap(file);
-    const scale = Math.min(1, 1600 / bitmap.width, 1000 / bitmap.height);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法创建画布");
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close?.();
-    let quality = 0.82;
-    let dataUrl = canvas.toDataURL("image/jpeg", quality);
-    while (dataUrl.length > WALLPAPER_MAX_CHARS && quality > 0.4) {
-      quality -= 0.1;
-      dataUrl = canvas.toDataURL("image/jpeg", quality);
+  let library = [...(state.settings.wallpaperLibrary ?? [])];
+  const thumbs = { ...state.wallpaperThumbs };
+  let activeId = "";
+  let activeData = "";
+  let added = 0;
+  for (const file of images) {
+    try {
+      const dataUrl = await compressWallpaper(file);
+      const id = `wp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const bytes = await api.saveWallpaper(id, dataUrl);
+      const name = (file.name.replace(/\.[^.]+$/, "").trim() || "本地壁纸").slice(0, 24);
+      library.push({ id, name, addedAt: Date.now(), bytes });
+      thumbs[id] = dataUrl;
+      activeId = id;
+      activeData = dataUrl;
+      added += 1;
+    } catch (error) {
+      showToast(`「${file.name}」处理失败：${String(error)}`, "error");
     }
-    if (dataUrl.length > WALLPAPER_MAX_CHARS) {
-      showToast("图片压缩后仍超出大小限制，请换一张更小的图片", "error");
-      return;
-    }
-    patchSettings({ wallpaperImage: dataUrl, wallpaper: "custom" });
-    refreshActive();
-    showToast("壁纸已更新", "success");
-  } catch (error) {
-    showToast(`壁纸读取失败：${String(error)}`, "error");
   }
+  if (!activeId) return;
+  const overflow = Math.max(0, library.length - 12);
+  const evicted = library.slice(0, overflow);
+  library = library.slice(-12);
+  for (const asset of evicted) {
+    delete thumbs[asset.id];
+    void api.deleteWallpaper(asset.id).catch(() => undefined);
+  }
+  state.wallpaperThumbs = thumbs;
+  state.wallpaperData = activeData;
+  patchSettings({
+    wallpaperLibrary: library,
+    wallpaper: "custom",
+    wallpaperAsset: activeId,
+    wallpaperImage: "",
+  });
+  applyAppearance();
+  refreshActive();
+  showToast(added > 1 ? `已添加 ${added} 张壁纸` : "壁纸已添加", "success");
 }
 
 function onModalInput(event: Event): void {
@@ -7400,20 +7846,64 @@ function onModalInput(event: Event): void {
       swatch.setAttribute("aria-pressed", "false");
     });
     target.closest(".accent-picker")?.classList.add("is-selected");
+  } else if (target.matches("[data-palette-color]")) {
+    const key = target.dataset.paletteColor as PaletteColorKey | undefined;
+    if (!key || !HEX_COLOR.test(target.value)) return;
+    state.settings = {
+      ...state.settings,
+      theme: "custom",
+      customPalette: { ...state.settings.customPalette, [key]: target.value },
+    };
+    applyAppearance();
+  } else if (target.matches("[data-palette-range]")) {
+    const key = target.dataset.paletteRange as PaletteRangeKey | undefined;
+    if (key !== "radius" && key !== "panelOpacity" && key !== "blur" && key !== "iconSize") {
+      return;
+    }
+    const limits =
+      key === "radius"
+        ? { min: 0, max: 30, unit: "px" }
+        : key === "panelOpacity"
+          ? { min: 30, max: 100, unit: "%" }
+          : key === "blur"
+            ? { min: 0, max: 48, unit: "px" }
+            : { min: 28, max: 64, unit: "px" };
+    const value = clampNumber(Number(target.value), limits.min, limits.max);
+    state.settings = {
+      ...state.settings,
+      theme: "custom",
+      customPalette: { ...state.settings.customPalette, [key]: value },
+    };
+    applyAppearance();
+    const label = els.modalLayer.querySelector<HTMLElement>(`[data-palette-value="${key}"]`);
+    if (label) label.textContent = `${value}${limits.unit}`;
   } else if (target.matches("[data-wallpaper-range]")) {
     const key = target.dataset.wallpaperRange as WallpaperSliderKey | undefined;
-    if (key !== "opacity" && key !== "blur" && key !== "dim") return;
-    const min = key === "opacity" ? 20 : 0;
-    const max = key === "opacity" ? 100 : key === "blur" ? 40 : 70;
-    const value = clampNumber(Number(target.value), min, max);
+    if (key !== "opacity" && key !== "blur" && key !== "dim" && key !== "x" && key !== "y" && key !== "zoom") {
+      return;
+    }
+    const limits =
+      key === "opacity"
+        ? { min: 20, max: 100, unit: "%" }
+        : key === "blur"
+          ? { min: 0, max: 40, unit: "px" }
+          : key === "dim"
+            ? { min: 0, max: 70, unit: "%" }
+            : key === "zoom"
+              ? { min: 100, max: 200, unit: "%" }
+              : { min: 0, max: 100, unit: "%" };
+    const value = clampNumber(Number(target.value), limits.min, limits.max);
     const next: Settings = { ...state.settings };
     if (key === "opacity") next.wallpaperOpacity = value;
     else if (key === "blur") next.wallpaperBlur = value;
-    else next.wallpaperDim = value;
+    else if (key === "dim") next.wallpaperDim = value;
+    else if (key === "x") next.wallpaperX = value;
+    else if (key === "y") next.wallpaperY = value;
+    else next.wallpaperZoom = value;
     state.settings = next;
     applyAppearance();
     const label = els.modalLayer.querySelector<HTMLElement>(`[data-wallpaper-value="${key}"]`);
-    if (label) label.textContent = `${value}${key === "blur" ? "px" : "%"}`;
+    if (label) label.textContent = `${value}${limits.unit}`;
   }
 }
 
@@ -8026,9 +8516,14 @@ els.modalLayer.addEventListener("change", (event) => {
   const target = event.target as HTMLElement;
   const fileInput = target.closest<HTMLInputElement>("[data-wallpaper-file]");
   if (fileInput) {
-    const file = fileInput.files?.[0];
+    const files = Array.from(fileInput.files ?? []);
     fileInput.value = "";
-    if (file) void importWallpaper(file);
+    if (files.length > 0) void importWallpapers(files);
+    return;
+  }
+  if (target.matches("[data-palette-range]") || target.matches("[data-palette-color]")) {
+    queueSave();
+    refreshActive();
     return;
   }
   if (target.matches("[data-wallpaper-range]") || target.matches("[data-custom-accent]")) {

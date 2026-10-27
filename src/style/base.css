@@ -101,6 +101,10 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   border-radius: 6px;
 }
 
+.app[data-theme="custom"] {
+  border-radius: 12px;
+}
+
 [data-runtime="tauri"] .app {
   border-radius: 8px;
   box-shadow: none;
@@ -142,11 +146,13 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   inset: -12%;
   z-index: 0;
   background-image: var(--wallpaper-image, none);
-  background-position: center;
+  background-position: var(--wallpaper-x, 50%) var(--wallpaper-y, 50%);
   background-repeat: var(--wallpaper-repeat, no-repeat);
   background-size: var(--wallpaper-size, cover);
   opacity: var(--wallpaper-opacity, 0.6);
   filter: blur(var(--wallpaper-blur, 0px));
+  transform: scale(var(--wallpaper-zoom, 1));
+  transform-origin: var(--wallpaper-x, 50%) var(--wallpaper-y, 50%);
   transition: opacity var(--motion-med) var(--ease-std);
 }
 
@@ -159,6 +165,23 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
 
 [data-mode="light"] .backdrop-wallpaper::after {
   background: rgba(255, 255, 255, var(--wallpaper-dim, 0));
+}
+
+/* 内容遮罩：只在照片类自定义壁纸上叠加主题底色，保证应用名等正文可读；
+   内置渐变壁纸与点阵/网格本身已按低对比度设计，不叠遮罩。 */
+.backdrop-scrim {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: transparent;
+}
+
+[data-wallpaper="custom"] .backdrop-scrim {
+  background: var(--wallpaper-scrim, rgba(255, 255, 255, 0.55));
+}
+
+[data-mode="dark"][data-wallpaper="custom"] .backdrop-scrim {
+  background: var(--wallpaper-scrim, rgba(14, 14, 16, 0.55));
 }
 
 /* 主题配色氛围层；默认主题为 none，不影响原有背景。 */

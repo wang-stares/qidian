@@ -1,4 +1,4 @@
-export type ThemeId = "win11" | "miuix" | "macos" | "mono";
+export type ThemeId = "win11" | "miuix" | "macos" | "mono" | "custom";
 export type ThemePresetId =
   | "default"
   | "ocean"
@@ -17,6 +17,8 @@ export type AccentId = "blue" | "violet" | "orange" | "green" | "rose" | "cyan" 
 /** 强调色可以是预设，也可以是用户自定义的十六进制颜色。 */
 export type AccentChoice = AccentId | "custom";
 export type WallpaperId = "none" | "aurora" | "dusk" | "sea" | "nebula" | "dots" | "grid" | "custom";
+/** 自定义图片壁纸的铺放方式。 */
+export type WallpaperFit = "cover" | "contain" | "tile" | "stretch";
 export type CornerStyle = "soft" | "sharp" | "round";
 export type BlurLevel = "off" | "standard" | "strong";
 export type Density = "cozy" | "compact";
@@ -67,6 +69,11 @@ export interface CustomTheme {
   customAccent: string;
   wallpaper: WallpaperId;
   wallpaperImage: string;
+  wallpaperAsset: string;
+  wallpaperFit: WallpaperFit;
+  wallpaperX: number;
+  wallpaperY: number;
+  wallpaperZoom: number;
   wallpaperOpacity: number;
   wallpaperBlur: number;
   wallpaperDim: number;
@@ -74,6 +81,29 @@ export interface CustomTheme {
   blur: BlurLevel;
   colorMode: ColorMode;
   density: Density;
+  palette: CustomPalette;
+}
+
+/** 自定义主题的调色板与形状参数。 */
+export interface CustomPalette {
+  bgLight: string;
+  bgDark: string;
+  panelLight: string;
+  panelDark: string;
+  textLight: string;
+  textDark: string;
+  radius: number;
+  panelOpacity: number;
+  blur: number;
+  iconSize: number;
+}
+
+/** 本地壁纸库中的一张图片（像素文件由后端保存在数据目录）。 */
+export interface WallpaperAsset {
+  id: string;
+  name: string;
+  addedAt: number;
+  bytes: number;
 }
 
 export interface Settings {
@@ -90,11 +120,19 @@ export interface Settings {
   /** 面板模糊档位：关闭 / 标准 / 加强。 */
   blur: BlurLevel;
   wallpaper: WallpaperId;
-  /** 自定义壁纸的 data URL（已在前端压缩），仅 wallpaper === "custom" 时生效。 */
+  /** 自定义壁纸的 data URL（兼容旧配置），仅 wallpaper === "custom" 时生效。 */
   wallpaperImage: string;
+  /** 当前使用的壁纸库图片 id；为空时回落到 wallpaperImage。 */
+  wallpaperAsset: string;
+  wallpaperLibrary: WallpaperAsset[];
+  wallpaperFit: WallpaperFit;
+  wallpaperX: number;
+  wallpaperY: number;
+  wallpaperZoom: number;
   wallpaperOpacity: number;
   wallpaperBlur: number;
   wallpaperDim: number;
+  customPalette: CustomPalette;
   customThemes: CustomTheme[];
   lowPower: boolean;
   scanUwp: boolean;

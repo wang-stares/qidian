@@ -2,9 +2,11 @@ import type {
   AccentId,
   Category,
   CategoryMeta,
+  CustomPalette,
   Settings,
   ThemeId,
   ThemePresetId,
+  WallpaperFit,
   WallpaperId,
 } from "./types";
 
@@ -61,7 +63,28 @@ export const THEME_OPTIONS: { id: ThemeId; name: string; short: string; note: st
   { id: "miuix", name: "Miuix 风格", short: "Miuix", note: "HyperOS · 柔和大圆角" },
   { id: "macos", name: "macOS 风格", short: "macOS", note: "SF 字体 · 通透侧栏" },
   { id: "mono", name: "极简 Mono", short: "Mono", note: "直角 · 无模糊" },
+  { id: "custom", name: "自定义", short: "自定义", note: "自己调色 · 圆角 · 图标" },
 ];
+
+export const WALLPAPER_FITS: { id: WallpaperFit; label: string }[] = [
+  { id: "cover", label: "填充" },
+  { id: "contain", label: "适应" },
+  { id: "tile", label: "平铺" },
+  { id: "stretch", label: "拉伸" },
+];
+
+export const DEFAULT_PALETTE: CustomPalette = {
+  bgLight: "#f2f3f5",
+  bgDark: "#131315",
+  panelLight: "#ffffff",
+  panelDark: "#1f1f22",
+  textLight: "#17181b",
+  textDark: "#f2f2f4",
+  radius: 12,
+  panelOpacity: 78,
+  blur: 26,
+  iconSize: 44,
+};
 
 export const THEME_PRESETS: {
   id: ThemePresetId;
@@ -106,9 +129,16 @@ export const DEFAULT_SETTINGS: Settings = {
   blur: "standard",
   wallpaper: "none",
   wallpaperImage: "",
+  wallpaperAsset: "",
+  wallpaperLibrary: [],
+  wallpaperFit: "cover",
+  wallpaperX: 50,
+  wallpaperY: 50,
+  wallpaperZoom: 100,
   wallpaperOpacity: 60,
   wallpaperBlur: 0,
   wallpaperDim: 0,
+  customPalette: { ...DEFAULT_PALETTE },
   customThemes: [],
   lowPower: false,
   scanUwp: true,
@@ -150,7 +180,12 @@ export function cloneSettings(settings: Settings): Settings {
     recent: settings.recent.map((r) => ({ ...r })),
     usage: { ...(settings.usage ?? {}) },
     hidden: [...settings.hidden],
-    customThemes: (settings.customThemes ?? []).map((theme) => ({ ...theme })),
+    customPalette: { ...settings.customPalette },
+    wallpaperLibrary: (settings.wallpaperLibrary ?? []).map((asset) => ({ ...asset })),
+    customThemes: (settings.customThemes ?? []).map((theme) => ({
+      ...theme,
+      palette: { ...theme.palette },
+    })),
   };
 }
 
