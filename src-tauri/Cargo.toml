@@ -1,6 +1,6 @@
 [package]
 name = "qidian"
-version = "0.23.0"
+version = "1.0.0"
 description = "A quiet, lightweight app launcher for Windows"
 authors = ["QiDian"]
 edition = "2021"
