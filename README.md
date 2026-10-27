@@ -69,6 +69,14 @@
 | --- | --- |
 | ![亮色](preview/win11-light.png) | ![暗色](preview/miuix-dark.png) |
 
+## 宣传片
+
+56 秒功能介绍（README 内为 GIF 预览，可直接播放；完整 1080p 版见下方链接）：
+
+![启点宣传片](preview/qidian-promo.gif)
+
+[▶ 下载完整版 1080p 宣传片（MP4，11 MB）](https://github.com/wang-stares/qidian/releases/download/v1.0.0/qidian-promo-1080p.mp4)
+
 ## 系统要求
 
 - Windows 10 1809（Build 17763）或更高版本；Windows 11 已内置 WebView2
