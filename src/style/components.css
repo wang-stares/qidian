@@ -6603,3 +6603,487 @@ mark {
   width: 9px;
   height: 9px;
 }
+
+/* ══ macOS 风格：交通灯、居中标题、Finder 侧栏、工具栏按钮 ══════ */
+
+[data-theme="macos"] .titlebar {
+  align-items: center;
+}
+
+[data-theme="macos"] .titlebar-drag {
+  justify-content: center;
+  padding-left: 96px;
+  padding-right: 8px;
+}
+
+[data-theme="macos"] .brand,
+[data-theme="macos"] .titlebar-divider {
+  display: none;
+}
+
+[data-theme="macos"] .titlebar-crumb {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-2);
+}
+
+[data-theme="macos"] .titlebar-actions {
+  padding-right: 10px;
+}
+
+[data-theme="macos"] .titlebar-btn {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+[data-theme="macos"] .titlebar-btn:hover {
+  background: var(--hover-strong);
+  color: var(--text);
+}
+
+/* 交通灯：把右侧窗口按钮重排到左上角，保持可点击 */
+[data-theme="macos"] .window-controls {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  height: 14px;
+  gap: 8px;
+  align-items: center;
+  transform: translateY(-50%);
+}
+
+[data-theme="macos"] .wc-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--mac-light, #febc2e);
+  color: transparent;
+  filter: none;
+}
+
+[data-theme="macos"] .wc-btn#btn-close {
+  order: 1;
+  --mac-light: #ff5f57;
+}
+
+[data-theme="macos"] .wc-btn#btn-min {
+  order: 2;
+  --mac-light: #febc2e;
+}
+
+[data-theme="macos"] .wc-btn#btn-max {
+  order: 3;
+  --mac-light: #28c840;
+}
+
+[data-theme="macos"] .wc-btn:hover,
+[data-theme="macos"] .wc-btn.wc-close:hover {
+  background: var(--mac-light);
+  color: transparent;
+  filter: brightness(1.04);
+}
+
+[data-theme="macos"] .wc-btn svg {
+  width: 8px;
+  height: 8px;
+  stroke-width: 2.2;
+  color: rgba(0, 0, 0, 0.58);
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+
+[data-theme="macos"] .window-controls:hover .wc-btn svg {
+  opacity: 1;
+}
+
+/* Finder 侧栏：整块通透、选中项用强调色填充 */
+[data-theme="macos"] .rail {
+  margin: 0;
+  padding: 10px 10px 12px;
+  border: 0;
+  border-right: 1px solid var(--stroke);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+[data-theme="macos"] .rail-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+[data-theme="macos"] .rail-item,
+[data-theme="macos"] .rail-settings {
+  gap: 9px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+[data-theme="macos"] .rail-item.is-active,
+[data-theme="macos"] .rail-settings.is-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+}
+
+[data-theme="macos"] .rail-item.is-active .rail-icon,
+[data-theme="macos"] .rail-item.is-active .rail-count,
+[data-theme="macos"] .rail-settings.is-active .rail-icon {
+  color: inherit;
+}
+
+[data-theme="macos"] .rail-item.is-active .rail-count {
+  opacity: 0.75;
+}
+
+/* macOS 工具栏搜索框 */
+[data-theme="macos"] .search {
+  border-radius: 7px;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+
+[data-theme="macos"] .search:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 主按钮：macOS 推按钮的轻微立体感 */
+[data-theme="macos"] .primary-btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 7px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 90%, #ffffff),
+    var(--accent)
+  );
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  font-weight: 500;
+}
+
+[data-theme="macos"] .scan-btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 7px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 90%, #ffffff),
+    var(--accent)
+  );
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  font-weight: 500;
+}
+
+[data-theme="macos"] .app-tile {
+  gap: 6px;
+}
+
+[data-theme="macos"] .app-name {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+/* ══ 极简 Mono：单色、等宽、硬边、无阴影 ═══════════════════════ */
+
+[data-theme="mono"] .titlebar {
+  border-bottom: 1px solid var(--divider);
+}
+
+[data-theme="mono"] .brand-mark {
+  width: 16px;
+  height: 16px;
+  color: var(--text);
+  filter: none;
+}
+
+[data-theme="mono"] .brand-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .brand-tag {
+  display: inline-flex;
+  padding: 1px 5px;
+  border: 1px solid var(--stroke-2);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+}
+
+[data-theme="mono"] .titlebar-divider {
+  display: none;
+}
+
+[data-theme="mono"] .titlebar-btn {
+  border: 1px solid var(--stroke);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .window-controls {
+  border-left: 1px solid var(--divider);
+}
+
+[data-theme="mono"] .wc-btn:hover {
+  background: var(--hover-strong);
+}
+
+[data-theme="mono"] .rail {
+  border-right: 1px solid var(--divider);
+  background: transparent;
+}
+
+[data-theme="mono"] .rail-label {
+  margin: 12px 8px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .rail-item,
+[data-theme="mono"] .rail-settings {
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 2px;
+  font-size: 12px;
+  font-weight: 450;
+}
+
+[data-theme="mono"] .rail-item.is-active,
+[data-theme="mono"] .rail-settings.is-active {
+  background: transparent;
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--text);
+  font-weight: 650;
+}
+
+[data-theme="mono"] .rail-item.is-active .rail-icon,
+[data-theme="mono"] .rail-item.is-active .rail-count {
+  color: var(--text);
+}
+
+[data-theme="mono"] .rail-count,
+[data-theme="mono"] .search-kbd,
+[data-theme="mono"] .view-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+[data-theme="mono"] .view-title {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+[data-theme="mono"] .view-sub {
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .section-head {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--divider);
+}
+
+[data-theme="mono"] .section-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .section-head p {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+}
+
+[data-theme="mono"] .app-tile {
+  border-radius: 2px;
+  background: transparent;
+  border-color: var(--stroke);
+}
+
+[data-theme="mono"] .app-tile:hover {
+  border-color: var(--text);
+  background: transparent;
+  transform: none;
+}
+
+[data-theme="mono"] .app-tile:active {
+  background: var(--hover);
+  transform: none;
+}
+
+[data-theme="mono"] .app-name {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+[data-theme="mono"] .primary-btn {
+  height: 32px;
+  border-radius: 2px;
+  background: var(--text);
+  box-shadow: none;
+  color: var(--surface-solid);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .scan-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 2px;
+  background: var(--text);
+  box-shadow: none;
+  color: var(--surface-solid);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .scan-btn:hover {
+  filter: none;
+  opacity: 0.86;
+}
+
+[data-theme="mono"] .primary-btn:hover {
+  filter: none;
+  opacity: 0.86;
+}
+
+[data-theme="mono"] .chip {
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .search {
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--stroke-2);
+}
+
+[data-theme="mono"] .search input {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+[data-theme="mono"] .search:focus-within {
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
+[data-theme="mono"] .tab {
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .tab.is-active {
+  background: var(--text);
+  color: var(--surface-solid);
+}
+
+[data-theme="mono"] .tab.is-active svg {
+  color: inherit;
+}
+
+[data-theme="mono"] .settings-section-title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+[data-theme="mono"] .settings-card {
+  border-radius: 2px;
+  background: transparent;
+}
+
+[data-theme="mono"] .setting-row {
+  border-top-color: var(--divider);
+}
+
+[data-theme="mono"] .modal {
+  border-radius: 4px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.18), 0 24px 60px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="mono"] .toast {
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* 主题缩略图：macOS 加交通灯，Mono 用硬边 */
+.preview-macos .p-rail {
+  position: relative;
+  padding-top: 13px;
+}
+
+.preview-macos .p-rail::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: 7px 0 0 #febc2e, 14px 0 0 #28c840;
+}
+
+.preview-macos .p-main {
+  padding-top: 6px;
+}
+
+.preview-macos .p-title {
+  width: 40%;
+  margin: 0 auto;
+}
+
+.preview-mono {
+  border-radius: 2px;
+}
+
+.preview-mono .p-rail,
+.preview-mono .p-tile {
+  border-radius: 1px;
+}
