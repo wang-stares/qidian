@@ -14,8 +14,11 @@ export interface SearchIndex {
   nameVariants: string[];
   namePinyin: string;
   nameInitials: string;
+  /** 保留原文拉丁部分的混合拼音：QQ音乐 → qqyinyue，微信 WeChat → weixinwechat。 */
+  namePinyinMixed: string;
   publisher: string;
   publisherPinyin: string;
+  publisherInitials: string;
   category: string;
   version: string;
   /** 安装目录 / 快捷方式中的有效目录名与文件名（含去空格形式）。 */
@@ -53,6 +56,16 @@ function pinyinForms(raw: string): { full: string; initials: string } {
     pattern: "first",
   }).join("");
   return { full: normalizeText(full).replace(/ /g, ""), initials: normalizeText(initials).replace(/ /g, "") };
+}
+
+/**
+ * 混合语言拼音：中文转拼音、原文中的英文/数字原样保留。
+ * 用于 QQ音乐 → qqyinyue、微信 WeChat → weixinwechat 这类中英混排名称。
+ */
+function mixedPinyin(raw: string): string {
+  if (!HAN.test(raw)) return "";
+  const parts = pinyin(raw, { toneType: "none", type: "array", nonZh: "consecutive" });
+  return normalizeText(parts.join(" ")).replace(/ /g, "");
 }
 
 function unique(values: string[]): string[] {
@@ -103,6 +116,7 @@ export function buildSearchIndex(app: AppEntry, categoryName: string): SearchInd
     ),
   );
   const nameForms = pinyinForms(app.name);
+  const namePinyinMixed = mixedPinyin(app.name);
 
   const publisherRaw = app.publisher ?? "";
   const publisher = normalizeText(splitCompound(publisherRaw));
@@ -120,8 +134,10 @@ export function buildSearchIndex(app: AppEntry, categoryName: string): SearchInd
     nameVariants,
     namePinyin: nameForms.full,
     nameInitials: nameForms.initials,
+    namePinyinMixed,
     publisher,
     publisherPinyin: publisherForms.full,
+    publisherInitials: publisherForms.initials,
     category: normalizeText(categoryName),
     version: normalizeText(app.version ?? ""),
     pathSegments: segments,
@@ -264,7 +280,14 @@ export function fuzzyMatchScore(
     if (token.length < (cjk ? 3 : 4)) return null;
     const candidates = cjk
       ? [index.name, index.nameCompact]
-      : [index.name, index.nameCompact, index.namePinyin, index.publisher];
+      : [
+          index.name,
+          index.nameCompact,
+          index.namePinyin,
+          index.namePinyinMixed,
+          index.publisher,
+          ...index.pathSegments,
+        ];
     let best = 0;
     for (const candidate of candidates) {
       if (candidate) best = Math.max(best, fuzzyScore(candidate, token));
@@ -272,7 +295,13 @@ export function fuzzyMatchScore(
     if (best === 0 && !cjk && token.length >= 5) {
       // 子序列失败时再看一次编辑距离，处理字母换位与拼写笔误；
       // 只对 5 个字符以上的关键词启用，避免 files → file 这类单复数噪声。
-      const words = [index.nameCompact, index.namePinyin, ...index.nameWords];
+      const words = [
+        index.nameCompact,
+        index.namePinyin,
+        index.namePinyinMixed,
+        ...index.nameWords,
+        ...index.pathSegments,
+      ];
       if (words.some((word) => word.length >= 5 && withinOneEdit(word, token))) {
         best = 520;
       }
@@ -329,7 +358,17 @@ export function tokenScore(index: SearchIndex, token: string): number {
     else if (allowContains && index.namePinyin.includes(token)) take(620);
     if (index.nameInitials === token) take(640);
     else if (index.nameInitials.startsWith(token)) take(590);
-    take(exactPrefixContains(index.publisherPinyin, token, 540, 500, 460));
+    // 混合拼音：qqyinyue / weixinwechat，中英混排名称也能整串命中
+    if (index.namePinyinMixed) {
+      if (index.namePinyinMixed === token) take(770);
+      else if (index.namePinyinMixed.startsWith(token)) take(710);
+      else if (allowContains && index.namePinyinMixed.includes(token)) take(610);
+    }
+    // 2 个字符的拉丁词不做发布者拼音的子串匹配（in → jinshan 这类误命中）
+    take(exactPrefixContains(index.publisherPinyin, token, 540, 500, allowContains ? 460 : 0));
+    // 发布者首字母：腾讯 → tx（只做精确 / 3 字符以上前缀，避免短词乱入）
+    if (index.publisherInitials === token) take(500);
+    else if (token.length >= 3 && index.publisherInitials.startsWith(token)) take(450);
   }
 
   // 发布者

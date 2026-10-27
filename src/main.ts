@@ -1288,14 +1288,23 @@ function collectSearchResults(
   phrase: string,
   fuzzy: boolean,
 ): AppEntry[] {
-  const scored: { app: AppEntry; score: number; order: number }[] = [];
+  const scored: { app: AppEntry; score: number; boost: number; order: number }[] = [];
+  // 常用 / 最近使用只用来裁决「评分完全相同」的应用，不参与评分本身，
+  // 避免热门但弱相关的应用被抬到强相关结果前面（跨档反转）。
+  const usage = usageRank();
+  const recent = recentRank();
   sortApps(visibleApps()).forEach((app, order) => {
     const index = searchIndex(app);
     const score = matchScore(index, tokens, phrase) ??
       (fuzzy ? fuzzyMatchScore(index, tokens, phrase) : null);
-    if (score !== null) scored.push({ app, score, order });
+    if (score === null) return;
+    const rank = recent.get(app.id);
+    const boost =
+      Math.min(usage.get(app.id) ?? 0, 20) * 2 +
+      (rank === undefined ? 0 : Math.max(0, 20 - rank));
+    scored.push({ app, score, boost, order });
   });
-  scored.sort((a, b) => b.score - a.score || a.order - b.order);
+  scored.sort((a, b) => b.score - a.score || b.boost - a.boost || a.order - b.order);
   return scored.map((item) => item.app);
 }
 
