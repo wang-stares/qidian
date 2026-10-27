@@ -142,6 +142,149 @@ function exactPrefixContains(
   return 0;
 }
 
+/* ── 模糊匹配（参考 fzf 打分模型） ──────────────────────────────
+ * fzf 的 FuzzyMatchV2 用「子序列 + 特殊位置奖励 + 间隔惩罚」打分：
+ * 词首 / 字符串开头 / 驼峰边界加分，间隔越长扣分越多，连续命中额外加分，
+ * 首个字符的位置奖励翻倍。这里保留同一套权重，改为 O(n·m) 的前缀最大值实现。
+ */
+const FUZZY_MATCH = 16;
+const FUZZY_BOUNDARY = 8;
+const FUZZY_BOUNDARY_WHITESPACE = 10;
+const FUZZY_CONSECUTIVE = 4;
+const FUZZY_FIRST_MULTIPLIER = 2;
+
+function boundaryBonus(text: string, position: number): number {
+  if (position === 0) return FUZZY_BOUNDARY_WHITESPACE;
+  if (text[position - 1] === " ") return FUZZY_BOUNDARY_WHITESPACE;
+  if (/[-_/.:]/.test(text[position - 1])) return FUZZY_BOUNDARY;
+  return 0;
+}
+
+/**
+ * 子序列模糊匹配得分，0 表示不匹配。
+ * token 必须按顺序出现在 text 中；最短 3 个字符，避免短词放大噪声。
+ */
+export function fuzzyScore(text: string, token: string): number {
+  const n = text.length;
+  const m = token.length;
+  if (m < 3 || m > n) return 0;
+
+  // 先做子序列剪枝：不按顺序出现直接放弃，省掉 DP。
+  let cursor = 0;
+  for (const char of token) {
+    const found = text.indexOf(char, cursor);
+    if (found < 0) return 0;
+    cursor = found + 1;
+  }
+
+  const NEG = Number.NEGATIVE_INFINITY;
+  let prev = new Array<number>(n).fill(NEG);
+  for (let j = 0; j < n; j += 1) {
+    if (text[j] !== token[0]) continue;
+    prev[j] =
+      FUZZY_MATCH +
+      boundaryBonus(text, j) * FUZZY_FIRST_MULTIPLIER -
+      Math.min(j, 8);
+  }
+
+  for (let i = 1; i < m; i += 1) {
+    const curr = new Array<number>(n).fill(NEG);
+    const char = token[i];
+    // bestGap 维护 max(prev[k] + k)，把间隔惩罚摊平成一次前缀最大值。
+    let bestGap = NEG;
+    for (let j = 0; j < n; j += 1) {
+      const earlier = j - 2;
+      if (earlier >= 0 && prev[earlier] !== NEG) {
+        bestGap = Math.max(bestGap, prev[earlier] + earlier);
+      }
+      if (text[j] !== char) continue;
+      let value = NEG;
+      if (bestGap !== NEG) {
+        // 与上一个匹配字符之间隔了至少一个字符：-3 起步，每多隔一个再 -1。
+        value = bestGap + FUZZY_MATCH + boundaryBonus(text, j) - j - 1;
+      }
+      if (j > 0 && prev[j - 1] !== NEG) {
+        value = Math.max(
+          value,
+          prev[j - 1] + FUZZY_MATCH + boundaryBonus(text, j) + FUZZY_CONSECUTIVE,
+        );
+      }
+      curr[j] = value;
+    }
+    prev = curr;
+  }
+
+  let best = NEG;
+  for (const value of prev) if (value > best) best = value;
+  if (best === NEG) return 0;
+  // 稀疏匹配（字符之间隔太远）视为无效，避免 abc 命中无关长名称。
+  if (best < m * 9) return 0;
+  return best;
+}
+
+/**
+ * 判断两个串是否只差一次编辑（替换 / 增删一个字符 / 相邻换位）。
+ * 用来兜住 chorme→chrome 这类字母顺序笔误。
+ */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true;
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length >= b.length ? b : a;
+  if (longer.length - shorter.length > 1) return false;
+  let index = 0;
+  while (index < shorter.length && longer[index] === shorter[index]) index += 1;
+  if (longer.length === shorter.length) {
+    if (longer.slice(index + 1) === shorter.slice(index + 1)) return true;
+    // 相邻两字符换位
+    return (
+      index + 1 < longer.length &&
+      longer[index] === shorter[index + 1] &&
+      longer[index + 1] === shorter[index] &&
+      longer.slice(index + 2) === shorter.slice(index + 2)
+    );
+  }
+  return longer.slice(index + 1) === shorter.slice(index);
+}
+
+/**
+ * 模糊兜底层：常规匹配一个结果都没有时才会启用。
+ * 覆盖漏字母（weixn）、字母换位（chorme）、缩写不完整（vscde）等情况，
+ * 得分整体低于常规匹配，保证不抢正序结果的排名。
+ */
+export function fuzzyMatchScore(
+  index: SearchIndex,
+  tokens: string[],
+  phrase: string,
+): number | null {
+  if (tokens.length === 0) return null;
+  let total = 0;
+  for (const token of tokens) {
+    const cjk = HAN.test(token);
+    // 拉丁短词模糊匹配噪声太大（not → Knot），至少 4 个字符才启用。
+    if (token.length < (cjk ? 3 : 4)) return null;
+    const candidates = cjk
+      ? [index.name, index.nameCompact]
+      : [index.name, index.nameCompact, index.namePinyin, index.publisher];
+    let best = 0;
+    for (const candidate of candidates) {
+      if (candidate) best = Math.max(best, fuzzyScore(candidate, token));
+    }
+    if (best === 0 && !cjk && token.length >= 5) {
+      // 子序列失败时再看一次编辑距离，处理字母换位与拼写笔误；
+      // 只对 5 个字符以上的关键词启用，避免 files → file 这类单复数噪声。
+      const words = [index.nameCompact, index.namePinyin, ...index.nameWords];
+      if (words.some((word) => word.length >= 5 && withinOneEdit(word, token))) {
+        best = 520;
+      }
+    }
+    if (best === 0) return null;
+    total += best;
+  }
+  const eligiblePhrase = HAN.test(phrase) || phrase.includes(" ");
+  const bonus = eligiblePhrase && index.name.includes(phrase) ? 180 : 0;
+  return 240 + total + bonus;
+}
+
 /**
  * 单个关键词的匹配得分；0 表示不匹配。
  * 拉丁词长度不足 3 时不做裸子串匹配（避免 mi 命中 terminal 这类误找），

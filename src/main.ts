@@ -18,6 +18,7 @@ import { escapeHtml, icon } from "./icons";
 import { RELEASES, type Release } from "./changelog";
 import {
   buildSearchIndex,
+  fuzzyMatchScore,
   matchScore,
   normalizeText,
   type SearchIndex,
@@ -1282,16 +1283,29 @@ function searchIndex(app: AppEntry): SearchIndex {
  * 评分覆盖名称、紧凑名、词首缩写、拼音全拼与首字母、发布者、分类、版本与安装路径，
  * 因此「小米」「xiaomi」「xm」「小米互联」都能命中，短拉丁词也不会因为裸子串乱入。
  */
-function searchResults(tokens = searchTokens()): AppEntry[] {
-  if (tokens.length === 0) return [];
-  const phrase = normalizeText(state.query);
+function collectSearchResults(
+  tokens: string[],
+  phrase: string,
+  fuzzy: boolean,
+): AppEntry[] {
   const scored: { app: AppEntry; score: number; order: number }[] = [];
   sortApps(visibleApps()).forEach((app, order) => {
-    const score = matchScore(searchIndex(app), tokens, phrase);
+    const index = searchIndex(app);
+    const score = matchScore(index, tokens, phrase) ??
+      (fuzzy ? fuzzyMatchScore(index, tokens, phrase) : null);
     if (score !== null) scored.push({ app, score, order });
   });
   scored.sort((a, b) => b.score - a.score || a.order - b.order);
   return scored.map((item) => item.app);
+}
+
+function searchResults(tokens = searchTokens()): AppEntry[] {
+  if (tokens.length === 0) return [];
+  const phrase = normalizeText(state.query);
+  // 先走精确 / 前缀 / 拼音 / 路径等常规匹配；一个都没有时才启用模糊兜底，
+  // 避免模糊结果混进正常搜索，同时保证拼写略错时不至于完全搜不到。
+  const strict = collectSearchResults(tokens, phrase, false);
+  return strict.length > 0 ? strict : collectSearchResults(tokens, phrase, true);
 }
 
 /** 归一化文本并保留每个字符对应的原文下标，用于高亮定位。 */
