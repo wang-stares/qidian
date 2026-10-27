@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 5;
+pub const CACHE_SCHEMA: u32 = 6;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -490,6 +490,120 @@ fn is_app_target(path: &str) -> bool {
     matches!(extension.as_str(), "exe" | "com" | "bat" | "cmd" | "msc")
 }
 
+/// 判断可执行文件名（不含扩展名，小写）是否是卸载程序。
+/// 覆盖 uninstall / uninstaller / uninst / unins000~unins999 / auxunin / 卸载* 等常见命名。
+#[cfg(windows)]
+fn is_uninstaller_stem(stem: &str) -> bool {
+    let lower = stem.to_lowercase();
+    lower.starts_with("unins")
+        || lower == "auxunin"
+        || lower.starts_with("uninstall")
+        || lower.starts_with("卸载")
+}
+
+/// 判断一个可执行文件路径是否指向卸载程序（按文件名或所在目录）。
+#[cfg(windows)]
+fn is_uninstaller_path(path: &str) -> bool {
+    if is_uninstaller_stem(
+        Path::new(path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
+    ) {
+        return true;
+    }
+    // 少数卸载器会放在 uninstall 子目录里（如 uninstall\auxunin.exe）。
+    Path::new(path)
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|value| value.to_str())
+        .map(|dir| dir.to_lowercase().starts_with("unins"))
+        .unwrap_or(false)
+}
+
+/// 安装/修复/运行时等辅助可执行文件，不适合作为应用启动目标。
+#[cfg(windows)]
+fn is_auxiliary_exe(stem: &str) -> bool {
+    let lower = stem.to_lowercase();
+    if is_uninstaller_stem(&lower) {
+        return true;
+    }
+    const AUX: &[&str] = &[
+        "setup",
+        "install",
+        "update",
+        "repair",
+        "vcredist",
+        "redist",
+        "dxsetup",
+        "dotnet",
+        "eula",
+        "readme",
+    ];
+    AUX.iter().any(|word| lower.contains(word))
+}
+
+/// 在安装目录里挑选主程序：优先按应用名分词匹配，其次匹配厂商名（小米系），
+/// 最后退回第一个非辅助程序；找不到（或目录不可读）返回 None。
+#[cfg(windows)]
+fn pick_main_executable(dir: &Path, display_name: &str) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("exe") {
+            candidates.push(path.to_string_lossy().to_string());
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let name_lower = display_name.to_lowercase();
+    let words: Vec<String> = name_lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| word.len() >= 2 && *word != "beta" && *word != "预览")
+        .map(str::to_string)
+        .collect();
+    let is_xiaomi = name_lower.contains("xiaomi") || display_name.contains("小米");
+
+    let mut fallback: Option<String> = None;
+    for exe in &candidates {
+        let stem = Path::new(exe)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        if is_auxiliary_exe(&stem) {
+            continue;
+        }
+        if fallback.is_none() {
+            fallback = Some(exe.clone());
+        }
+        // 应用名分词命中（如 display name 里的关键词出现在主程序名里）
+        if words.iter().any(|word| stem.contains(word)) {
+            return Some(exe.clone());
+        }
+        // 小米系应用的主程序常带 xiaomi / miread 等标识
+        if is_xiaomi && (stem.contains("xiaomi") || stem.contains("miread")) {
+            return Some(exe.clone());
+        }
+    }
+    fallback
+}
+
 #[cfg(windows)]
 fn strip_shortcut_suffix(name: &str) -> String {
     let lower = name.to_lowercase();
@@ -548,6 +662,11 @@ fn resolve_shortcut(path: &str) -> ShortcutTarget {
         }
         let exe = String::from_utf16_lossy(&buffer[..length]);
         if !Path::new(&exe).is_file() || !is_app_target(&exe) {
+            return ShortcutTarget::Missing;
+        }
+        // 快捷方式指向卸载程序（如「卸载 xxx」的快捷方式解析到 unins000.exe）时，
+        // 不应作为应用启动目标，直接跳过。
+        if is_uninstaller_path(&exe) {
             return ShortcutTarget::Missing;
         }
 
@@ -631,8 +750,21 @@ fn collect_registry() -> Vec<RegistryApp> {
                     continue;
                 }
             }
+            let install_location = key
+                .get_value::<String, _>("InstallLocation")
+                .ok()
+                .map(|value| clean_path(&value))
+                .filter(|value| !value.is_empty());
             let display_icon: Option<String> = key.get_value("DisplayIcon").ok();
-            let exe = display_icon.as_deref().and_then(display_icon_to_exe);
+            let mut exe = display_icon.as_deref().and_then(display_icon_to_exe);
+            // DisplayIcon 常指向卸载程序（unins000.exe / 卸载.exe 等）而不是主程序，
+            // 点这样的条目会直接弹出卸载确认框。此时尝试从 InstallLocation 里挑主程序，
+            // 挑不到就把 exe 置空（该注册表项只用于补充信息，不作为启动入口）。
+            if exe.as_ref().is_some_and(|path| is_uninstaller_path(path)) {
+                exe = install_location
+                    .as_deref()
+                    .and_then(|dir| pick_main_executable(Path::new(dir), &name));
+            }
             let publisher = key
                 .get_value::<String, _>("Publisher")
                 .ok()
@@ -642,11 +774,6 @@ fn collect_registry() -> Vec<RegistryApp> {
                 .get_value::<String, _>("DisplayVersion")
                 .ok()
                 .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            let install_location = key
-                .get_value::<String, _>("InstallLocation")
-                .ok()
-                .map(|value| clean_path(&value))
                 .filter(|value| !value.is_empty());
 
             result.push(RegistryApp {
@@ -698,6 +825,10 @@ fn collect_app_paths() -> Vec<RegistryApp> {
             let Some(exe) = display_icon_to_exe(&raw) else {
                 continue;
             };
+            // App Paths 理论上只登记主程序，个别应用也会登记卸载器，过滤掉。
+            if is_uninstaller_path(&exe) {
+                continue;
+            }
             // Windows 自带应用执行别名（如 System32\SnippingTool.exe）会与
             // Store / 开始菜单条目重复，例如「SnippingTool」和「截图工具」。
             if is_windows_alias_path(&exe) {

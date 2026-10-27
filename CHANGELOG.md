@@ -3,6 +3,15 @@
 版本号遵循语义化版本（SemVer），更新公告格式参考 Keep a Changelog。
 每次发布前必须在本文件补充当前版本的条目；`npm run build` 会校验版本号与公告是否一致。
 
+## [1.0.1] - 2026-10-27
+
+### 修复
+
+- **扫描误把卸载程序当成应用**：部分应用（如小米互联服务）的注册表 DisplayIcon 或开始菜单快捷方式指向的是卸载器（unins000.exe / uninstall.exe / 卸载.exe），点击启动会直接弹出卸载确认框而不是打开应用。本次修复：
+  - 识别卸载器命名（unins* / uninstall* / uninst / auxunin / 卸载* 及 uninstall 子目录），快捷方式、注册表 DisplayIcon、App Paths 三处统一过滤；
+  - 注册表来源若 DisplayIcon 指向卸载器，改为从 InstallLocation 目录自动挑选主程序（按应用名分词 / 厂商标识匹配，排除 setup、update、运行时等辅助程序），挑不到则不再作为启动入口，仅保留信息补充；
+  - 扫描缓存版本升级，旧缓存自动失效并重新扫描一次。
+
 ## [1.0.0] - 2026-10-27
 
 ### 正式开源
