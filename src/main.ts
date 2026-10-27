@@ -17,6 +17,12 @@ import {
 import { escapeHtml, icon } from "./icons";
 import { RELEASES, type Release } from "./changelog";
 import {
+  buildSearchIndex,
+  matchScore,
+  normalizeText,
+  type SearchIndex,
+} from "./search";
+import {
   ACCENTS,
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
@@ -528,7 +534,7 @@ function cacheIcon(id: string, url: string): void {
     removed += 1;
   }
 }
-const haystackCache = new WeakMap<AppEntry, { key: string; value: string }>();
+const searchIndexCache = new WeakMap<AppEntry, { key: string; index: SearchIndex }>();
 let visibleCache: { apps: AppEntry[]; hidden: string[]; list: AppEntry[] } | null = null;
 let appMapCache: { apps: AppEntry[]; map: Map<string, AppEntry> } | null = null;
 let resultsQuery = "";
@@ -1255,51 +1261,111 @@ function updateIconHosts(ids: string[]): void {
 /* ── content ──────────────────────────────────────────────────── */
 
 function searchTokens(): string[] {
-  return state.query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
+  return normalizeText(state.query).split(/\s+/).filter(Boolean);
 }
 
-function searchHaystack(app: AppEntry): string {
-  const category = categoryById(effectiveCategory(app));
-  const key = `${app.name}\u0001${app.publisher ?? ""}\u0001${app.version ?? ""}\u0001${
-    category?.name ?? ""
+/** 取应用当前的搜索索引；分类、名称或发布者变化时自动重建。 */
+function searchIndex(app: AppEntry): SearchIndex {
+  const categoryName = categoryById(effectiveCategory(app))?.name ?? "";
+  const key = `${categoryName}\u0001${app.name}\u0001${app.publisher ?? ""}\u0001${
+    app.version ?? ""
   }`;
-  const cached = haystackCache.get(app);
-  if (cached && cached.key === key) return cached.value;
-  const value = [app.name, app.publisher ?? "", app.version ?? "", category?.name ?? ""]
-    .join(" ")
-    .toLowerCase();
-  haystackCache.set(app, { key, value });
-  return value;
+  const cached = searchIndexCache.get(app);
+  if (cached && cached.key === key) return cached.index;
+  const index = buildSearchIndex(app, categoryName);
+  searchIndexCache.set(app, { key, index });
+  return index;
 }
 
+/**
+ * 搜索结果按匹配质量降序；同分时保持当前排序偏好（名称 / 最近 / 常用）的相对顺序。
+ * 评分覆盖名称、紧凑名、词首缩写、拼音全拼与首字母、发布者、分类、版本与安装路径，
+ * 因此「小米」「xiaomi」「xm」「小米互联」都能命中，短拉丁词也不会因为裸子串乱入。
+ */
 function searchResults(tokens = searchTokens()): AppEntry[] {
   if (tokens.length === 0) return [];
-  return visibleApps().filter((app) => {
-    const haystack = searchHaystack(app);
-    return tokens.every((token) => haystack.includes(token));
+  const phrase = normalizeText(state.query);
+  const scored: { app: AppEntry; score: number; order: number }[] = [];
+  sortApps(visibleApps()).forEach((app, order) => {
+    const score = matchScore(searchIndex(app), tokens, phrase);
+    if (score !== null) scored.push({ app, score, order });
   });
+  scored.sort((a, b) => b.score - a.score || a.order - b.order);
+  return scored.map((item) => item.app);
+}
+
+/** 归一化文本并保留每个字符对应的原文下标，用于高亮定位。 */
+function highlightMaps(text: string): {
+  value: string;
+  map: number[];
+  compact: string;
+  compactMap: number[];
+} {
+  let value = "";
+  let compact = "";
+  const map: number[] = [];
+  const compactMap: number[] = [];
+  let offset = 0;
+  for (const char of text) {
+    const start = offset;
+    offset += char.length;
+    const normalized = char
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    const kept = /[\p{L}\p{N}]/u.test(normalized) ? normalized : " ";
+    for (const piece of kept) {
+      value += piece;
+      map.push(start);
+      if (piece !== " ") {
+        compact += piece;
+        compactMap.push(start);
+      }
+    }
+  }
+  return { value, map, compact, compactMap };
+}
+
+/** 把 token 在归一化串中的所有出现位置换算成原文区间。 */
+function collectHighlightRanges(
+  haystack: string,
+  source: number[],
+  token: string,
+  ranges: { start: number; end: number }[],
+): void {
+  let index = haystack.indexOf(token);
+  while (index >= 0 && ranges.length < 64) {
+    const start = source[index];
+    const last = source[index + token.length - 1];
+    if (start !== undefined && last !== undefined) ranges.push({ start, end: last + 1 });
+    index = haystack.indexOf(token, index + 1);
+  }
 }
 
 function highlight(text: string, tokens: string[]): string {
   if (tokens.length === 0) return escapeHtml(text);
-  const lower = text.toLowerCase();
-  let matchIndex = -1;
-  let matchLength = 0;
+  const { value, map, compact, compactMap } = highlightMaps(text);
+  const ranges: { start: number; end: number }[] = [];
   for (const token of tokens) {
-    const index = lower.indexOf(token);
-    if (index >= 0 && (matchIndex < 0 || index < matchIndex)) {
-      matchIndex = index;
-      matchLength = token.length;
-    }
+    collectHighlightRanges(value, map, token, ranges);
+    collectHighlightRanges(compact, compactMap, token, ranges);
   }
-  if (matchIndex < 0) return escapeHtml(text);
-  return `${escapeHtml(text.slice(0, matchIndex))}<mark>${escapeHtml(
-    text.slice(matchIndex, matchIndex + matchLength),
-  )}</mark>${escapeHtml(text.slice(matchIndex + matchLength))}`;
+  if (ranges.length === 0) return escapeHtml(text);
+  ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ start: range.start, end: range.end });
+  }
+  let html = "";
+  let cursor = 0;
+  for (const range of merged) {
+    html += escapeHtml(text.slice(cursor, range.start));
+    html += `<mark>${escapeHtml(text.slice(range.start, range.end))}</mark>`;
+    cursor = range.end;
+  }
+  return `${html}${escapeHtml(text.slice(cursor))}`;
 }
 
 function renderAppTile(app: AppEntry, tokens: string[]): string {
@@ -1406,7 +1472,7 @@ function renderContent(): void {
 
   if (query.length > 0) {
     if (resultsQuery !== state.query) {
-      state.lastResults = sortApps(searchResults(tokens));
+      state.lastResults = searchResults(tokens);
       resultsQuery = state.query;
     }
     resultsForCursor = state.lastResults;
@@ -7314,7 +7380,7 @@ function updateSearch(value: string): void {
   state.resetScroll = true;
   els.searchWrap.classList.toggle("has-query", value.length > 0);
   els.searchClear.hidden = value.length === 0;
-  state.lastResults = sortApps(searchResults());
+  state.lastResults = searchResults();
   resultsQuery = value;
   scheduleRender("query");
 }

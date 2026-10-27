@@ -1,7 +1,7 @@
 {
   "name": "qidian",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,8 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.4.0"
+    "@tauri-apps/api": "^2.4.0",
+    "pinyin-pro": "^3.29.5"
   },
   "description": "启点 - 轻量 Windows 应用分类启动台"
 }
