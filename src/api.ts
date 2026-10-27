@@ -4,6 +4,7 @@ import type {
   CleanupApp,
   CleanupDeleteReport,
   CleanupScan,
+  CustomTheme,
   DiagReport,
   DiskUsageScan,
   DnsStatus,
@@ -93,6 +94,18 @@ function normalizeSettings(raw: unknown): Settings {
           )
         : {},
     hidden: Array.isArray(incoming.hidden) ? [...incoming.hidden] : [],
+    customThemes: Array.isArray(incoming.customThemes)
+      ? incoming.customThemes
+          .filter(
+            (theme): theme is CustomTheme =>
+              Boolean(theme) &&
+              typeof theme === "object" &&
+              typeof (theme as CustomTheme).id === "string" &&
+              typeof (theme as CustomTheme).name === "string",
+          )
+          .slice(-12)
+          .map((theme) => ({ ...theme }))
+      : [],
   };
   return merged;
 }

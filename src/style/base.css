@@ -93,6 +93,14 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   border-radius: 16px;
 }
 
+.app[data-theme="macos"] {
+  border-radius: 14px;
+}
+
+.app[data-theme="mono"] {
+  border-radius: 6px;
+}
+
 [data-runtime="tauri"] .app {
   border-radius: 8px;
   box-shadow: none;
@@ -100,6 +108,10 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
 
 [data-runtime="tauri"] .app[data-theme="miuix"] {
   border-radius: 16px;
+}
+
+[data-runtime="tauri"] .app[data-theme="macos"] {
+  border-radius: 12px;
 }
 
 [data-runtime="web"] .app {
@@ -123,16 +135,44 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   pointer-events: none;
 }
 
+/* 壁纸层：位于主题氛围层之下，透明度 / 模糊 / 明暗由设置项驱动。
+   inset 取负值，避免模糊时四周出现透明硬边。 */
+.backdrop-wallpaper {
+  position: absolute;
+  inset: -12%;
+  z-index: 0;
+  background-image: var(--wallpaper-image, none);
+  background-position: center;
+  background-repeat: var(--wallpaper-repeat, no-repeat);
+  background-size: var(--wallpaper-size, cover);
+  opacity: var(--wallpaper-opacity, 0.6);
+  filter: blur(var(--wallpaper-blur, 0px));
+  transition: opacity var(--motion-med) var(--ease-std);
+}
+
+.backdrop-wallpaper::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, var(--wallpaper-dim, 0));
+}
+
+[data-mode="light"] .backdrop-wallpaper::after {
+  background: rgba(255, 255, 255, var(--wallpaper-dim, 0));
+}
+
 /* 主题配色氛围层；默认主题为 none，不影响原有背景。 */
 .backdrop::before {
   content: "";
   position: absolute;
+  z-index: 2;
   inset: 0;
   background: var(--preset-wash);
 }
 
 .backdrop-glow {
   position: absolute;
+  z-index: 3;
   right: -18vw;
   bottom: -34vw;
   width: 56vw;
@@ -154,6 +194,7 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
 .backdrop::after {
   content: "";
   position: absolute;
+  z-index: 4;
   inset: 0;
   background:
     radial-gradient(120% 100% at 50% 0%, rgba(255, 255, 255, 0.08), transparent 45%),

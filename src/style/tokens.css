@@ -36,6 +36,24 @@
   --accent: #c53a6c;
   --accent-fg: #ffffff;
 }
+[data-accent="cyan"] {
+  --accent: #0e7c9e;
+  --accent-fg: #ffffff;
+}
+[data-accent="amber"] {
+  --accent: #b06b12;
+  --accent-fg: #ffffff;
+}
+[data-accent="slate"] {
+  --accent: #55606f;
+  --accent-fg: #ffffff;
+}
+
+/* 自定义强调色：实际色值由前端写入内联变量，前景色按亮度自动取黑或白。 */
+[data-accent="custom"] {
+  --accent: var(--accent-custom, #1b62d6);
+  --accent-fg: var(--accent-fg-custom, #ffffff);
+}
 
 [data-mode="dark"][data-accent="blue"] {
   --accent: #6cb6ff;
@@ -56,6 +74,18 @@
 [data-mode="dark"][data-accent="rose"] {
   --accent: #ff9dbb;
   --accent-fg: #2a0814;
+}
+[data-mode="dark"][data-accent="cyan"] {
+  --accent: #66d9ef;
+  --accent-fg: #04191f;
+}
+[data-mode="dark"][data-accent="amber"] {
+  --accent: #ffc46b;
+  --accent-fg: #241603;
+}
+[data-mode="dark"][data-accent="slate"] {
+  --accent: #a9b6c6;
+  --accent-fg: #0d1117;
 }
 
 /* ── 主题配色：背景氛围 ───────────────────────────────────────── */
@@ -109,6 +139,69 @@
   --preset-wash:
     linear-gradient(155deg, rgba(255, 157, 187, 0.11), transparent 58%),
     radial-gradient(70% 60% at 0% 100%, rgba(255, 176, 103, 0.06), transparent 72%);
+}
+[data-preset="nebula"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(110, 75, 224, 0.16), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(37, 99, 235, 0.12), transparent 72%);
+}
+[data-preset="mint"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(13, 148, 136, 0.14), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(101, 163, 13, 0.09), transparent 72%);
+}
+[data-preset="graphite"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(100, 116, 139, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(15, 23, 42, 0.06), transparent 72%);
+}
+[data-preset="coffee"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(146, 64, 14, 0.15), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(180, 83, 9, 0.09), transparent 72%);
+}
+[data-preset="aurora"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(14, 165, 233, 0.14), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(16, 185, 129, 0.1), transparent 72%),
+    radial-gradient(50% 50% at 100% 100%, rgba(139, 92, 246, 0.07), transparent 70%);
+}
+[data-preset="peach"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(251, 113, 133, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(251, 146, 60, 0.09), transparent 72%);
+}
+
+[data-mode="dark"][data-preset="nebula"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(185, 163, 255, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(96, 165, 250, 0.09), transparent 72%);
+}
+[data-mode="dark"][data-preset="mint"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(94, 234, 212, 0.11), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(163, 230, 53, 0.06), transparent 72%);
+}
+[data-mode="dark"][data-preset="graphite"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(148, 163, 184, 0.1), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(226, 232, 240, 0.05), transparent 72%);
+}
+[data-mode="dark"][data-preset="coffee"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(217, 119, 6, 0.12), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(250, 204, 21, 0.05), transparent 72%);
+}
+[data-mode="dark"][data-preset="aurora"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(56, 189, 248, 0.12), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(52, 211, 153, 0.08), transparent 72%),
+    radial-gradient(50% 50% at 100% 100%, rgba(167, 139, 250, 0.07), transparent 70%);
+}
+[data-mode="dark"][data-preset="peach"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(251, 113, 133, 0.11), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(251, 146, 60, 0.07), transparent 72%);
 }
 
 /* ── Windows 11 / Fluent ─────────────────────────────────────── */
@@ -207,6 +300,104 @@
   --tile-bg: var(--tile-surface);
   --tile-shadow: var(--shadow-tile);
   --checkbox-radius: 999px;
+}
+
+/* ── macOS / Sonoma ──────────────────────────────────────────── */
+[data-theme="macos"] {
+  --font-ui: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
+    "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace;
+
+  --titlebar-h: 44px;
+  --titlebar-pad-left: 16px;
+  --rail-w: 218px;
+  --rail-margin: 8px 0 8px 8px;
+  --rail-radius: 14px;
+  --rail-item-h: 38px;
+  --rail-item-radius: 10px;
+  --rail-label-size: 11px;
+  --rail-label-spacing: 0.03em;
+  --main-pad-x: 30px;
+  --main-pad-top: 22px;
+  --tile-min: 104px;
+  --tile-h: 118px;
+  --icon-size: 46px;
+  --icon-radius: 12px;
+  --tile-radius: 16px;
+  --gap-grid: 8px;
+  --section-gap: 26px;
+  --search-h: 38px;
+  --search-radius: 10px;
+  --control-radius: 9px;
+  --panel-radius: 16px;
+  --dialog-radius: 18px;
+  --settings-card-radius: 12px;
+  --inspector-inset: 12px;
+  --inspector-w: 310px;
+  --panel-blur: 30px;
+  --tile-border: transparent;
+  --tile-lift: 0px;
+  --view-title-size: 26px;
+  --view-title-weight: 600;
+  --quickbar-radius: 999px;
+  --button-weight: 500;
+  --titlebar-crumb-display: inline-flex;
+  --brand-tag-display: none;
+  --section-line-display: none;
+  --tile-bg: transparent;
+  --tile-shadow: none;
+  --checkbox-radius: 5px;
+}
+
+/* ── 极简 Mono ───────────────────────────────────────────────── */
+[data-theme="mono"] {
+  --font-ui: "Inter", "HarmonyOS Sans SC", "Source Han Sans SC", "Microsoft YaHei UI",
+    "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-display: "Inter", "HarmonyOS Sans SC", "Source Han Sans SC", "Microsoft YaHei UI",
+    "PingFang SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, "Microsoft YaHei UI", monospace;
+
+  --titlebar-h: 42px;
+  --titlebar-pad-left: 16px;
+  --rail-w: 208px;
+  --rail-margin: 0;
+  --rail-radius: 0;
+  --rail-item-h: 34px;
+  --rail-item-radius: 3px;
+  --rail-label-size: 10px;
+  --rail-label-spacing: 0.1em;
+  --main-pad-x: 24px;
+  --main-pad-top: 16px;
+  --tile-min: 88px;
+  --tile-h: 96px;
+  --icon-size: 36px;
+  --icon-radius: 6px;
+  --tile-radius: 3px;
+  --gap-grid: 3px;
+  --section-gap: 18px;
+  --search-h: 34px;
+  --search-radius: 3px;
+  --control-radius: 3px;
+  --panel-radius: 0px;
+  --dialog-radius: 6px;
+  --settings-card-radius: 4px;
+  --inspector-inset: 8px;
+  --inspector-w: 300px;
+  --panel-blur: 0px;
+  --tile-border: var(--stroke);
+  --tile-lift: 0px;
+  --view-title-size: 22px;
+  --view-title-weight: 600;
+  --quickbar-radius: 3px;
+  --button-weight: 550;
+  --titlebar-crumb-display: none;
+  --brand-tag-display: none;
+  --section-line-display: block;
+  --tile-bg: transparent;
+  --tile-shadow: none;
+  --checkbox-radius: 2px;
 }
 
 /* Win11 light */
@@ -377,6 +568,174 @@
   --wc-hover: rgba(255, 255, 255, 0.075);
 }
 
+/* macOS light */
+[data-theme="macos"][data-mode="light"] {
+  --app-bg: rgba(242, 242, 247, 0.88);
+  --app-tint: rgba(255, 255, 255, 0.32);
+  --bg-warm: color-mix(in srgb, var(--accent) 5%, transparent);
+  --panel: rgba(255, 255, 255, 0.5);
+  --panel-strong: rgba(250, 250, 252, 0.82);
+  --surface: rgba(255, 255, 255, 0.66);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(0, 0, 0, 0.028);
+  --surface-3: rgba(0, 0, 0, 0.05);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.68);
+  --tile-active: rgba(255, 255, 255, 0.9);
+  --stroke: rgba(0, 0, 0, 0.062);
+  --stroke-2: rgba(0, 0, 0, 0.12);
+  --divider: rgba(0, 0, 0, 0.078);
+  --text: #1c1c1e;
+  --text-2: #48484a;
+  --text-3: #8e8e93;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(0, 0, 0, 0.042);
+  --hover-strong: rgba(0, 0, 0, 0.07);
+  --dialog-bg: #f7f7f9;
+  --flyout-bg: rgba(250, 250, 252, 0.85);
+  --toast-bg: rgba(28, 28, 30, 0.93);
+  --toast-text: #ffffff;
+  --danger: #d70015;
+  --danger-soft: rgba(215, 0, 21, 0.09);
+  --success: #248a3d;
+  --warning: #b25000;
+  --window-border: rgba(255, 255, 255, 0.6);
+  --shadow-tile: none;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.05);
+  --shadow-flyout: 0 20px 48px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-dialog: 0 32px 80px rgba(0, 0, 0, 0.24), 0 2px 10px rgba(0, 0, 0, 0.07);
+  --shadow-window: 0 30px 80px rgba(0, 0, 0, 0.34);
+  --skeleton-a: rgba(0, 0, 0, 0.035);
+  --skeleton-b: rgba(0, 0, 0, 0.065);
+  --wc-hover: rgba(0, 0, 0, 0.055);
+}
+
+/* macOS dark */
+[data-theme="macos"][data-mode="dark"] {
+  --app-bg: rgba(28, 28, 30, 0.9);
+  --app-tint: rgba(255, 255, 255, 0.018);
+  --bg-warm: color-mix(in srgb, var(--accent) 6%, transparent);
+  --panel: rgba(255, 255, 255, 0.048);
+  --panel-strong: rgba(38, 38, 40, 0.86);
+  --surface: rgba(255, 255, 255, 0.062);
+  --surface-solid: #2c2c2e;
+  --surface-2: rgba(255, 255, 255, 0.05);
+  --surface-3: rgba(255, 255, 255, 0.08);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.072);
+  --tile-active: rgba(255, 255, 255, 0.11);
+  --stroke: rgba(255, 255, 255, 0.075);
+  --stroke-2: rgba(255, 255, 255, 0.15);
+  --divider: rgba(255, 255, 255, 0.085);
+  --text: #f5f5f7;
+  --text-2: #c7c7cc;
+  --text-3: #98989d;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(255, 255, 255, 0.065);
+  --hover-strong: rgba(255, 255, 255, 0.1);
+  --dialog-bg: #2c2c2e;
+  --flyout-bg: rgba(40, 40, 42, 0.92);
+  --toast-bg: rgba(245, 245, 247, 0.95);
+  --toast-text: #1c1c1e;
+  --danger: #ff6961;
+  --danger-soft: rgba(255, 105, 97, 0.13);
+  --success: #30d158;
+  --warning: #ff9f0a;
+  --window-border: rgba(255, 255, 255, 0.1);
+  --shadow-tile: none;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.22), 0 10px 26px rgba(0, 0, 0, 0.24);
+  --shadow-flyout: 0 22px 54px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.32);
+  --shadow-dialog: 0 40px 100px rgba(0, 0, 0, 0.66), 0 2px 10px rgba(0, 0, 0, 0.32);
+  --shadow-window: 0 34px 96px rgba(0, 0, 0, 0.66);
+  --skeleton-a: rgba(255, 255, 255, 0.04);
+  --skeleton-b: rgba(255, 255, 255, 0.08);
+  --wc-hover: rgba(255, 255, 255, 0.07);
+}
+
+/* Mono light */
+[data-theme="mono"][data-mode="light"] {
+  --app-bg: rgba(247, 247, 245, 0.97);
+  --app-tint: rgba(255, 255, 255, 0.4);
+  --bg-warm: color-mix(in srgb, var(--accent) 3%, transparent);
+  --panel: rgba(0, 0, 0, 0.018);
+  --panel-strong: rgba(255, 255, 255, 0.9);
+  --surface: rgba(0, 0, 0, 0.025);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(0, 0, 0, 0.035);
+  --surface-3: rgba(0, 0, 0, 0.06);
+  --tile-surface: transparent;
+  --tile-hover: rgba(0, 0, 0, 0.04);
+  --tile-active: rgba(0, 0, 0, 0.07);
+  --stroke: rgba(0, 0, 0, 0.09);
+  --stroke-2: rgba(0, 0, 0, 0.16);
+  --divider: rgba(0, 0, 0, 0.07);
+  --text: #111111;
+  --text-2: #4b4b4b;
+  --text-3: #7a7a7a;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(0, 0, 0, 0.04);
+  --hover-strong: rgba(0, 0, 0, 0.075);
+  --dialog-bg: #fbfbfa;
+  --flyout-bg: rgba(251, 251, 250, 0.94);
+  --toast-bg: rgba(17, 17, 17, 0.94);
+  --toast-text: #fafafa;
+  --danger: #c0362c;
+  --danger-soft: rgba(192, 54, 44, 0.09);
+  --success: #1d7a43;
+  --warning: #94620a;
+  --window-border: rgba(255, 255, 255, 0.6);
+  --shadow-tile: none;
+  --shadow-panel: none;
+  --shadow-flyout: 0 14px 34px rgba(0, 0, 0, 0.12);
+  --shadow-dialog: 0 28px 60px rgba(0, 0, 0, 0.2);
+  --shadow-window: 0 24px 60px rgba(0, 0, 0, 0.28);
+  --skeleton-a: rgba(0, 0, 0, 0.035);
+  --skeleton-b: rgba(0, 0, 0, 0.07);
+  --wc-hover: rgba(0, 0, 0, 0.06);
+}
+
+/* Mono dark */
+[data-theme="mono"][data-mode="dark"] {
+  --app-bg: rgba(15, 15, 16, 0.97);
+  --app-tint: rgba(255, 255, 255, 0.015);
+  --bg-warm: color-mix(in srgb, var(--accent) 5%, transparent);
+  --panel: rgba(255, 255, 255, 0.028);
+  --panel-strong: rgba(26, 26, 28, 0.94);
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-solid: #1a1a1c;
+  --surface-2: rgba(255, 255, 255, 0.045);
+  --surface-3: rgba(255, 255, 255, 0.07);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.055);
+  --tile-active: rgba(255, 255, 255, 0.09);
+  --stroke: rgba(255, 255, 255, 0.1);
+  --stroke-2: rgba(255, 255, 255, 0.18);
+  --divider: rgba(255, 255, 255, 0.075);
+  --text: #f2f2f2;
+  --text-2: #b9b9b9;
+  --text-3: #8a8a8a;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(255, 255, 255, 0.055);
+  --hover-strong: rgba(255, 255, 255, 0.09);
+  --dialog-bg: #141416;
+  --flyout-bg: rgba(26, 26, 28, 0.95);
+  --toast-bg: rgba(242, 242, 242, 0.95);
+  --toast-text: #111111;
+  --danger: #ff8a80;
+  --danger-soft: rgba(255, 110, 100, 0.12);
+  --success: #6ddcb2;
+  --warning: #ffb067;
+  --window-border: rgba(255, 255, 255, 0.08);
+  --shadow-tile: none;
+  --shadow-panel: none;
+  --shadow-flyout: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-dialog: 0 32px 72px rgba(0, 0, 0, 0.66);
+  --shadow-window: 0 28px 72px rgba(0, 0, 0, 0.68);
+  --skeleton-a: rgba(255, 255, 255, 0.035);
+  --skeleton-b: rgba(255, 255, 255, 0.075);
+  --wc-hover: rgba(255, 255, 255, 0.075);
+}
+
 [data-density="compact"] {
   --tile-h: 92px;
   --tile-min: 88px;
@@ -398,4 +757,117 @@
   --motion-fast: 0ms;
   --motion-med: 0ms;
   --motion-slow: 0ms;
+  --wallpaper-blur: 0px;
+}
+
+/* ── 圆角档位：覆盖主题默认值，仅调整形状，不改配色 ─────────────── */
+[data-corners="sharp"] {
+  --tile-radius: 3px;
+  --icon-radius: 5px;
+  --search-radius: 3px;
+  --control-radius: 3px;
+  --panel-radius: 0px;
+  --dialog-radius: 6px;
+  --settings-card-radius: 4px;
+  --quickbar-radius: 3px;
+  --rail-radius: 0px;
+  --rail-item-radius: 3px;
+  --checkbox-radius: 2px;
+}
+[data-corners="round"] {
+  --tile-radius: 22px;
+  --icon-radius: 16px;
+  --search-radius: 999px;
+  --control-radius: 999px;
+  --panel-radius: 24px;
+  --dialog-radius: 26px;
+  --settings-card-radius: 18px;
+  --quickbar-radius: 999px;
+  --rail-radius: 24px;
+  --rail-item-radius: 14px;
+  --checkbox-radius: 999px;
+}
+
+/* ── 面板模糊档位 ─────────────────────────────────────────────── */
+[data-blur="off"] {
+  --panel-blur: 0px;
+}
+[data-blur="strong"] {
+  --panel-blur: 44px;
+}
+
+/* ── 壁纸：与主题配色叠加的氛围层 ─────────────────────────────── */
+[data-wallpaper="none"], .wp-none {
+  --wallpaper-image: none;
+}
+
+[data-wallpaper="aurora"], .wp-aurora {
+  --wallpaper-image:
+    radial-gradient(60% 70% at 12% 6%, rgba(56, 189, 248, 0.42), transparent 62%),
+    radial-gradient(55% 65% at 88% 14%, rgba(167, 139, 250, 0.36), transparent 64%),
+    radial-gradient(72% 72% at 58% 100%, rgba(52, 211, 153, 0.32), transparent 66%);
+}
+[data-mode="dark"][data-wallpaper="aurora"], .wp-aurora {
+  --wallpaper-image:
+    radial-gradient(60% 70% at 12% 6%, rgba(56, 189, 248, 0.3), transparent 62%),
+    radial-gradient(55% 65% at 88% 14%, rgba(167, 139, 250, 0.26), transparent 64%),
+    radial-gradient(72% 72% at 58% 100%, rgba(52, 211, 153, 0.22), transparent 66%);
+}
+
+[data-wallpaper="dusk"], .wp-dusk {
+  --wallpaper-image:
+    radial-gradient(72% 62% at 8% 100%, rgba(251, 146, 60, 0.44), transparent 62%),
+    radial-gradient(62% 62% at 86% 8%, rgba(244, 114, 182, 0.3), transparent 66%),
+    linear-gradient(180deg, rgba(255, 244, 232, 0.45), transparent 58%);
+}
+[data-mode="dark"][data-wallpaper="dusk"], .wp-dusk {
+  --wallpaper-image:
+    radial-gradient(72% 62% at 8% 100%, rgba(251, 146, 60, 0.28), transparent 62%),
+    radial-gradient(62% 62% at 86% 8%, rgba(244, 114, 182, 0.2), transparent 66%);
+}
+
+[data-wallpaper="sea"], .wp-sea {
+  --wallpaper-image:
+    radial-gradient(66% 70% at 18% 0%, rgba(45, 212, 191, 0.38), transparent 62%),
+    radial-gradient(72% 62% at 92% 92%, rgba(59, 130, 246, 0.34), transparent 64%);
+}
+[data-mode="dark"][data-wallpaper="sea"], .wp-sea {
+  --wallpaper-image:
+    radial-gradient(66% 70% at 18% 0%, rgba(45, 212, 191, 0.26), transparent 62%),
+    radial-gradient(72% 62% at 92% 92%, rgba(59, 130, 246, 0.24), transparent 64%);
+}
+
+[data-wallpaper="nebula"], .wp-nebula {
+  --wallpaper-image:
+    radial-gradient(60% 66% at 78% 10%, rgba(139, 92, 246, 0.4), transparent 64%),
+    radial-gradient(56% 60% at 18% 82%, rgba(37, 99, 235, 0.34), transparent 66%),
+    radial-gradient(40% 40% at 50% 50%, rgba(236, 72, 153, 0.16), transparent 70%);
+}
+[data-mode="dark"][data-wallpaper="nebula"], .wp-nebula {
+  --wallpaper-image:
+    radial-gradient(60% 66% at 78% 10%, rgba(139, 92, 246, 0.32), transparent 64%),
+    radial-gradient(56% 60% at 18% 82%, rgba(37, 99, 235, 0.28), transparent 66%),
+    radial-gradient(40% 40% at 50% 50%, rgba(236, 72, 153, 0.12), transparent 70%);
+}
+
+[data-wallpaper="dots"], .wp-dots {
+  --wallpaper-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--text) 15%, transparent) 1px,
+    transparent 0
+  );
+  --wallpaper-size: 22px 22px;
+  --wallpaper-repeat: repeat;
+}
+
+[data-wallpaper="grid"], .wp-grid {
+  --wallpaper-image:
+    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  --wallpaper-size: 32px 32px;
+  --wallpaper-repeat: repeat;
+}
+
+[data-wallpaper="custom"], .wp-custom {
+  --wallpaper-image: none;
 }

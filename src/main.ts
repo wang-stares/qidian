@@ -27,13 +27,15 @@ import {
   ACCENTS,
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
+  THEME_OPTIONS,
   THEME_PRESETS,
+  WALLPAPERS,
   categoryColor,
   categoryGlyph,
   cloneSettings,
 } from "./defaults";
 import type {
-  AccentId,
+  AccentChoice,
   AppEntry,
   CleanupApp,
   CleanupCandidate,
@@ -41,6 +43,9 @@ import type {
   CleanupScan,
   Category,
   ColorMode,
+  CornerStyle,
+  BlurLevel,
+  CustomTheme,
   Density,
   DiagReport,
   DiskUsageScan,
@@ -70,6 +75,7 @@ import type {
   StartupItem,
   StartupSource,
   ThemeId,
+  WallpaperId,
   UninstallReport,
   ViewMode,
 } from "./types";
@@ -190,6 +196,7 @@ interface UiState {
   inspectorId: string | null;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  customThemeName: string;
   workspace: WorkspaceTab;
   editingCategoryId: string | null;
   pendingCategoryDelete: string | null;
@@ -327,6 +334,7 @@ const state: UiState = {
   inspectorId: null,
   settingsOpen: false,
   settingsTab: "theme",
+  customThemeName: "",
   workspace: "launcher",
   editingCategoryId: null,
   pendingCategoryDelete: null,
@@ -453,6 +461,9 @@ const SOURCE_LABELS: Record<AppEntry["source"], string> = {
 };
 
 const APP_VERSION = __APP_VERSION__;
+/** 自定义强调色校验；自定义壁纸在设置文件中的字符上限。 */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const WALLPAPER_MAX_CHARS = 1_200_000;
 const ICON_BATCH_SIZE = 40;
 /// 允许两批图标同时在途：后端每批内部已并行，滚动时后一批不必等前一批返回。
 const ICON_MAX_INFLIGHT = 2;
@@ -670,21 +681,60 @@ function resolvedMode(): "light" | "dark" {
   return state.settings.colorMode;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** 按相对亮度挑选强调色上的前景色，保证自定义色也满足对比度。 */
+function accentForeground(hex: string): string {
+  if (!HEX_COLOR.test(hex)) return "#ffffff";
+  const channel = (offset: number) => {
+    const raw = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return raw <= 0.03928 ? raw / 12.92 : ((raw + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  return luminance > 0.42 ? "#0b0b0c" : "#ffffff";
+}
+
 function applyAppearance(): void {
-  els.app.dataset.theme = state.settings.theme;
-  els.app.dataset.preset = THEME_PRESETS.some((preset) => preset.id === state.settings.themePreset)
-    ? state.settings.themePreset
+  const settings = state.settings;
+  els.app.dataset.theme = settings.theme;
+  els.app.dataset.preset = THEME_PRESETS.some((preset) => preset.id === settings.themePreset)
+    ? settings.themePreset
     : "default";
   els.app.dataset.mode = resolvedMode();
-  els.app.dataset.accent = state.settings.accent;
-  els.app.dataset.density = state.settings.density;
-  els.app.dataset.lowpower = String(state.settings.lowPower);
+  els.app.dataset.accent = settings.accent;
+  els.app.dataset.density = settings.density;
+  els.app.dataset.corners = settings.corners;
+  els.app.dataset.blur = settings.blur;
+  els.app.dataset.wallpaper = settings.wallpaper;
+  els.app.dataset.lowpower = String(settings.lowPower);
   document.documentElement.style.colorScheme = resolvedMode();
-  els.themeQuickLabel.textContent = state.settings.theme === "win11" ? "Win11" : "Miuix";
+
+  const customAccent = HEX_COLOR.test(settings.customAccent) ? settings.customAccent : "#1b62d6";
+  if (settings.accent === "custom") {
+    els.app.style.setProperty("--accent-custom", customAccent);
+    els.app.style.setProperty("--accent-fg-custom", accentForeground(customAccent));
+  } else {
+    els.app.style.removeProperty("--accent-custom");
+    els.app.style.removeProperty("--accent-fg-custom");
+  }
+
+  els.app.style.setProperty("--wallpaper-opacity", String(clampNumber(settings.wallpaperOpacity, 0, 100) / 100));
+  els.app.style.setProperty("--wallpaper-blur", `${clampNumber(settings.wallpaperBlur, 0, 40)}px`);
+  els.app.style.setProperty("--wallpaper-dim", String(clampNumber(settings.wallpaperDim, 0, 70) / 100));
+  if (settings.wallpaper === "custom" && settings.wallpaperImage) {
+    els.app.style.setProperty("--wallpaper-image", `url("${settings.wallpaperImage}")`);
+  } else {
+    els.app.style.removeProperty("--wallpaper-image");
+  }
+
+  const current = THEME_OPTIONS.find((theme) => theme.id === settings.theme) ?? THEME_OPTIONS[0];
+  els.themeQuickLabel.textContent = current.short;
   const themeBtn = document.getElementById("btn-theme-quick");
   if (themeBtn) {
-    themeBtn.title =
-      state.settings.theme === "win11" ? "当前：Windows 11 风格，点击切换" : "当前：Miuix 风格，点击切换";
+    themeBtn.title = `当前：${current.name}（${current.note}），点击切换`;
   }
 }
 
@@ -2072,24 +2122,15 @@ function settingsHtml(): string {
   </div>`;
 }
 
-function themeOption(id: ThemeId, name: string, note: string): string {
-  const selected = state.settings.theme === id;
+function themeOption(theme: (typeof THEME_OPTIONS)[number]): string {
+  const selected = state.settings.theme === theme.id;
   const dark = resolvedMode() === "dark" ? " is-dark" : "";
-  const preview =
-    id === "miuix"
-      ? `<div class="theme-preview preview-miuix${dark}" aria-hidden="true">
-          <div class="p-rail"><span class="p-nav is-active"></span><span class="p-nav"></span><span class="p-nav"></span><span class="p-nav"></span></div>
-          <div class="p-main"><span class="p-title"></span><span class="p-sub"></span><div class="p-grid"><span class="p-tile is-accent"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span></div></div>
-        </div>`
-      : `<div class="theme-preview preview-win11${dark}" aria-hidden="true">
-          <div class="p-rail"><span class="p-nav is-active"></span><span class="p-nav"></span><span class="p-nav"></span><span class="p-nav"></span></div>
-          <div class="p-main"><span class="p-title"></span><span class="p-sub"></span><div class="p-grid"><span class="p-tile is-accent"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span></div></div>
-        </div>`;
-  return `<button class="theme-option${selected ? " is-selected" : ""}" data-settings-action="theme" data-value="${id}" aria-pressed="${selected}" data-focus-key="theme-${id}">
-    ${preview}
-    <span class="theme-option-name"><span>${name}<small>${note}</small></span><span class="theme-check">${icon(
-      "check",
-    )}</span></span>
+  return `<button class="theme-option${selected ? " is-selected" : ""}" data-settings-action="theme" data-value="${theme.id}" aria-pressed="${selected}" data-focus-key="theme-${theme.id}">
+    <div class="theme-preview preview-${theme.id}${dark}" aria-hidden="true">
+      <div class="p-rail"><span class="p-nav is-active"></span><span class="p-nav"></span><span class="p-nav"></span><span class="p-nav"></span></div>
+      <div class="p-main"><span class="p-title"></span><span class="p-sub"></span><div class="p-grid"><span class="p-tile is-accent"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span><span class="p-tile"></span></div></div>
+    </div>
+    <span class="theme-option-name"><span>${theme.name}<small>${theme.note}</small></span><span class="theme-check">${icon("check")}</span></span>
   </button>`;
 }
 
@@ -2104,24 +2145,135 @@ function themePresetOption(preset: (typeof THEME_PRESETS)[number]): string {
   </button>`;
 }
 
+type WallpaperSliderKey = "opacity" | "blur" | "dim";
+
+function wallpaperRangeRow(
+  title: string,
+  key: WallpaperSliderKey,
+  value: number,
+  min: number,
+  max: number,
+  unit: string,
+  desc: string,
+): string {
+  return `<div class="setting-row">
+    <div class="setting-copy"><div class="setting-title">${title}</div><div class="setting-desc">${desc}</div></div>
+    <div class="setting-control">
+      <span class="range-value" data-wallpaper-value="${key}">${value}${unit}</span>
+      <input class="range-input" type="range" min="${min}" max="${max}" step="1" value="${value}" data-wallpaper-range="${key}" data-focus-key="wallpaper-${key}" aria-label="${title}" />
+    </div>
+  </div>`;
+}
+
+function wallpaperOption(item: (typeof WALLPAPERS)[number]): string {
+  const settings = state.settings;
+  const selected = settings.wallpaper === item.id;
+  const customImage = item.id === "custom" && Boolean(settings.wallpaperImage);
+  const previewClass = [
+    "wallpaper-preview",
+    item.id === "custom" ? "is-custom" : `wp-${item.id}`,
+    customImage ? "has-image" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const style = customImage ? ` style="background-image:url(&quot;${settings.wallpaperImage}&quot;)"` : "";
+  const inner = item.id === "custom" && !customImage ? icon("plus") : "";
+  return `<button class="wallpaper-option${selected ? " is-selected" : ""}" data-settings-action="wallpaper" data-value="${item.id}" aria-pressed="${selected}" data-focus-key="wallpaper-${item.id}">
+    <span class="${previewClass}" aria-hidden="true"${style}>${inner}</span>
+    <span class="wallpaper-copy">${item.name}<small>${item.note}</small></span>
+    <span class="theme-check wallpaper-check">${icon("check")}</span>
+  </button>`;
+}
+
+function wallpaperPanel(): string {
+  const settings = state.settings;
+  return `<div class="settings-section">
+      <h3 class="settings-section-title">壁纸</h3>
+      <p class="settings-section-desc">壁纸铺在主题氛围层下方，可与任意界面风格、配色自由组合；自定义图片只保存在本机设置里。</p>
+      <div class="wallpaper-options">${WALLPAPERS.map(wallpaperOption).join("")}</div>
+      <div class="wallpaper-actions">
+        <button data-settings-action="wallpaper-upload" data-focus-key="wallpaper-upload">${icon(
+          "folder",
+        )}选择本地图片</button>
+        ${
+          settings.wallpaperImage
+            ? `<button class="is-danger" data-settings-action="wallpaper-clear" data-focus-key="wallpaper-clear">${icon(
+                "trash",
+              )}移除图片</button>`
+            : ""
+        }
+        <input type="file" accept="image/*" hidden data-wallpaper-file />
+      </div>
+      <div class="settings-card wallpaper-sliders">
+        ${wallpaperRangeRow("不透明度", "opacity", settings.wallpaperOpacity, 20, 100, "%", "越低越接近纯色背景，兼顾氛围与可读性。")}
+        ${wallpaperRangeRow("模糊", "blur", settings.wallpaperBlur, 0, 40, "px", "柔化照片类壁纸，减少文字干扰；低功耗模式自动关闭。")}
+        ${wallpaperRangeRow("明暗", "dim", settings.wallpaperDim, 0, 70, "%", "浅色模式提亮、深色模式压暗，提升内容对比度。")}
+      </div>
+    </div>`;
+}
+
+function customThemeItem(theme: CustomTheme): string {
+  const themeName = THEME_OPTIONS.find((item) => item.id === theme.theme)?.short ?? "自定义";
+  const presetName = THEME_PRESETS.find((item) => item.id === theme.preset)?.name ?? "默认";
+  const wallpaperName = WALLPAPERS.find((item) => item.id === theme.wallpaper)?.name ?? "无壁纸";
+  const cornerName =
+    theme.corners === "sharp" ? "直角" : theme.corners === "round" ? "大圆角" : "跟随主题";
+  const accentColor =
+    theme.accent === "custom"
+      ? theme.customAccent
+      : (ACCENTS.find((item) => item.id === theme.accent)?.color ?? "#1b62d6");
+  return `<div class="custom-theme-item">
+    <span class="custom-theme-swatch" style="background:${accentColor}"></span>
+    <div class="custom-theme-copy">
+      <div class="custom-theme-name">${escapeHtml(theme.name)}</div>
+      <div class="custom-theme-meta">${themeName} · ${presetName} · ${wallpaperName} · ${cornerName}</div>
+    </div>
+    <button data-settings-action="custom-theme-apply" data-id="${escapeHtml(theme.id)}" data-focus-key="custom-theme-apply-${theme.id}">应用</button>
+    <button class="is-danger" data-settings-action="custom-theme-delete" data-id="${escapeHtml(
+      theme.id,
+    )}" data-focus-key="custom-theme-delete-${theme.id}">删除</button>
+  </div>`;
+}
+
+function customThemesPanel(): string {
+  const themes = state.settings.customThemes ?? [];
+  return `<div class="settings-section">
+      <h3 class="settings-section-title">我的主题</h3>
+      <p class="settings-section-desc">把当前的主题、配色、壁纸、圆角与模糊保存成方案，之后一键还原；最多保留 12 套。</p>
+      <div class="settings-card">
+        <div class="custom-theme-new">
+          <input data-custom-theme-name maxlength="16" placeholder="主题名称，例如「夜间极光」" value="${escapeHtml(
+            state.customThemeName,
+          )}" aria-label="主题名称" data-focus-key="custom-theme-name" />
+          <button data-settings-action="custom-theme-save" data-focus-key="custom-theme-save">保存当前外观</button>
+        </div>
+        ${
+          themes.length === 0
+            ? `<div class="custom-theme-empty">还没有保存的主题：先调好外观，再点「保存当前外观」。</div>`
+            : themes.map(customThemeItem).join("")
+        }
+      </div>
+    </div>`;
+}
+
 function themePanel(): string {
   const modes: { id: ColorMode; label: string }[] = [
     { id: "system", label: "跟随系统" },
     { id: "light", label: "浅色" },
     { id: "dark", label: "深色" },
   ];
+  const settings = state.settings;
   return `<div class="settings-section">
+      <h3 class="settings-section-title">界面风格</h3>
+      <p class="settings-section-desc">决定布局、圆角与字体：Windows 原生、Miuix 柔和、macOS 通透、Mono 直角。</p>
+      <div class="theme-options">${THEME_OPTIONS.map(themeOption).join("")}</div>
+    </div>
+    <div class="settings-section">
       <h3 class="settings-section-title">主题配色</h3>
       <p class="settings-section-desc">主题决定窗口背景氛围，并同步推荐强调色；应用后仍可在下方单独调整。</p>
       <div class="preset-options">${THEME_PRESETS.map(themePresetOption).join("")}</div>
     </div>
-    <div class="settings-section">
-      <h3 class="settings-section-title">界面风格</h3>
-      <div class="theme-options">
-        ${themeOption("miuix", "Miuix 风格", "HyperOS · 柔和大圆角")}
-        ${themeOption("win11", "Windows 11", "Fluent · 原生 Mica")}
-      </div>
-    </div>
+    ${wallpaperPanel()}
     <div class="settings-section">
       <h3 class="settings-section-title">明暗与强调色</h3>
       <div class="settings-card">
@@ -2130,29 +2282,44 @@ function themePanel(): string {
           <div class="setting-control"><div class="chips">${modes
             .map(
               (mode) =>
-                `<button class="chip${state.settings.colorMode === mode.id ? " is-active" : ""}" data-settings-action="mode" data-value="${mode.id}" data-focus-key="mode-${mode.id}">${mode.label}</button>`,
+                `<button class="chip${settings.colorMode === mode.id ? " is-active" : ""}" data-settings-action="mode" data-value="${mode.id}" data-focus-key="mode-${mode.id}">${mode.label}</button>`,
             )
             .join("")}</div></div>
         </div>
         <div class="setting-row">
-          <div class="setting-copy"><div class="setting-title">强调色</div><div class="setting-desc">用于选中态、快捷按钮与分类点缀；不影响已选主题的背景氛围。</div></div>
+          <div class="setting-copy"><div class="setting-title">强调色</div><div class="setting-desc">用于选中态、快捷按钮与分类点缀；支持直接取色，前景色按亮度自动适配。</div></div>
           <div class="setting-control"><div class="swatches">${ACCENTS.map(
             (accent) =>
-              `<button class="swatch${state.settings.accent === accent.id ? " is-selected" : ""}" style="--swatch-color:${
+              `<button class="swatch${settings.accent === accent.id ? " is-selected" : ""}" style="--swatch-color:${
                 accent.color
               }" data-settings-action="accent" data-value="${accent.id}" data-focus-key="accent-${accent.id}" title="${accent.name}" aria-label="${accent.name}" aria-pressed="${
-                state.settings.accent === accent.id
+                settings.accent === accent.id
               }">${icon("check")}</button>`,
-          ).join("")}</div></div>
+          ).join("")}<label class="accent-picker${
+            settings.accent === "custom" ? " is-selected" : ""
+          }" title="自定义强调色" data-focus-key="accent-custom"><input type="color" data-custom-accent value="${
+            HEX_COLOR.test(settings.customAccent) ? settings.customAccent : "#1b62d6"
+          }" aria-label="自定义强调色" /></label></div></div>
         </div>
       </div>
-    </div>`;
+    </div>
+    ${customThemesPanel()}`;
 }
 
 function appearancePanel(): string {
   const densities: { id: Density; label: string }[] = [
     { id: "cozy", label: "舒适" },
     { id: "compact", label: "紧凑" },
+  ];
+  const corners: { id: CornerStyle; label: string }[] = [
+    { id: "soft", label: "跟随主题" },
+    { id: "sharp", label: "直角" },
+    { id: "round", label: "大圆角" },
+  ];
+  const blurs: { id: BlurLevel; label: string }[] = [
+    { id: "off", label: "关闭" },
+    { id: "standard", label: "标准" },
+    { id: "strong", label: "加强" },
   ];
   return `<div class="settings-section">
       <h3 class="settings-section-title">显示</h3>
@@ -2163,6 +2330,24 @@ function appearancePanel(): string {
             .map(
               (density) =>
                 `<button class="chip${state.settings.density === density.id ? " is-active" : ""}" data-settings-action="density" data-value="${density.id}" data-focus-key="density-${density.id}">${density.label}</button>`,
+            )
+            .join("")}</div></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">圆角</div><div class="setting-desc">跟随主题使用各风格默认形状；直角更利落，大圆角更柔和，对全部面板生效。</div></div>
+          <div class="setting-control"><div class="chips">${corners
+            .map(
+              (corner) =>
+                `<button class="chip${state.settings.corners === corner.id ? " is-active" : ""}" data-settings-action="corners" data-value="${corner.id}" data-focus-key="corners-${corner.id}">${corner.label}</button>`,
+            )
+            .join("")}</div></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">面板模糊</div><div class="setting-desc">侧栏、设置与浮层的背景模糊强度；关闭后最省 GPU，加强后壁纸更通透。</div></div>
+          <div class="setting-control"><div class="chips">${blurs
+            .map(
+              (blur) =>
+                `<button class="chip${state.settings.blur === blur.id ? " is-active" : ""}" data-settings-action="blur" data-value="${blur.id}" data-focus-key="blur-${blur.id}">${blur.label}</button>`,
             )
             .join("")}</div></div>
         </div>
@@ -6813,8 +6998,9 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     case "theme": {
       const theme = actionEl.dataset.value as ThemeId;
       if (theme !== state.settings.theme) {
+        const next = THEME_OPTIONS.find((item) => item.id === theme);
         patchSettings({ theme });
-        showToast(`已切换到 ${theme === "miuix" ? "Miuix 风格" : "Windows 11 风格"}`, "info");
+        showToast(`已切换到 ${next?.name ?? theme}`, "info");
       }
       return;
     }
@@ -6826,6 +7012,20 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     case "density": {
       const density = actionEl.dataset.value as Density;
       patchSettings({ density });
+      return;
+    }
+    case "corners": {
+      const corners = actionEl.dataset.value as CornerStyle;
+      if (corners === "soft" || corners === "sharp" || corners === "round") {
+        patchSettings({ corners });
+      }
+      return;
+    }
+    case "blur": {
+      const blur = actionEl.dataset.value as BlurLevel;
+      if (blur === "off" || blur === "standard" || blur === "strong") {
+        patchSettings({ blur });
+      }
       return;
     }
     case "refresh": {
@@ -6841,7 +7041,7 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       return;
     }
     case "accent": {
-      const accent = actionEl.dataset.value as AccentId;
+      const accent = actionEl.dataset.value as AccentChoice;
       patchSettings({ accent });
       return;
     }
@@ -6850,6 +7050,44 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       if (!preset) return;
       patchSettings({ themePreset: preset.id, accent: preset.accent });
       showToast(`已应用「${preset.name}」主题`, "info");
+      return;
+    }
+    case "wallpaper": {
+      const wallpaper = actionEl.dataset.value as WallpaperId;
+      if (wallpaper === "custom") {
+        if (state.settings.wallpaperImage) patchSettings({ wallpaper });
+        else els.modalLayer.querySelector<HTMLInputElement>("[data-wallpaper-file]")?.click();
+        return;
+      }
+      patchSettings({ wallpaper });
+      return;
+    }
+    case "wallpaper-upload":
+      els.modalLayer.querySelector<HTMLInputElement>("[data-wallpaper-file]")?.click();
+      return;
+    case "wallpaper-clear": {
+      patchSettings({
+        wallpaperImage: "",
+        wallpaper: state.settings.wallpaper === "custom" ? "none" : state.settings.wallpaper,
+      });
+      showToast("已移除自定义壁纸", "info");
+      return;
+    }
+    case "custom-theme-save":
+      saveCustomTheme();
+      return;
+    case "custom-theme-apply": {
+      const id = actionEl.dataset.id;
+      if (id) applyCustomTheme(id);
+      return;
+    }
+    case "custom-theme-delete": {
+      const id = actionEl.dataset.id;
+      if (!id) return;
+      const next = (state.settings.customThemes ?? []).filter((item) => item.id !== id);
+      patchSettings({ customThemes: next });
+      refreshActive();
+      showToast("已删除该主题", "info");
       return;
     }
     case "toggle": {
@@ -7056,12 +7294,126 @@ function commitCategoryRename(): void {
   showToast(`已重命名为「${name}」`, "success");
 }
 
+function saveCustomTheme(): void {
+  const settings = state.settings;
+  const fallback = `我的主题 ${(settings.customThemes?.length ?? 0) + 1}`;
+  const name = (state.customThemeName.trim() || fallback).slice(0, 16);
+  const theme: CustomTheme = {
+    id: `ct-${Date.now().toString(36)}`,
+    name,
+    theme: settings.theme,
+    preset: settings.themePreset,
+    accent: settings.accent,
+    customAccent: settings.customAccent,
+    wallpaper: settings.wallpaper,
+    // 自定义壁纸体积较大，只保留全局一份；应用方案时回落到当前壁纸图片。
+    wallpaperImage: "",
+    wallpaperOpacity: settings.wallpaperOpacity,
+    wallpaperBlur: settings.wallpaperBlur,
+    wallpaperDim: settings.wallpaperDim,
+    corners: settings.corners,
+    blur: settings.blur,
+    colorMode: settings.colorMode,
+    density: settings.density,
+  };
+  const next = [...(settings.customThemes ?? []), theme].slice(-12);
+  state.customThemeName = "";
+  patchSettings({ customThemes: next });
+  refreshActive();
+  showToast(`已保存主题「${name}」`, "success");
+}
+
+function applyCustomTheme(id: string): void {
+  const current = state.settings;
+  const theme = (current.customThemes ?? []).find((item) => item.id === id);
+  if (!theme) return;
+  const wallpaperImage = theme.wallpaperImage || current.wallpaperImage;
+  const wallpaper =
+    theme.wallpaper === "custom" && !wallpaperImage ? "none" : theme.wallpaper;
+  patchSettings({
+    theme: theme.theme,
+    themePreset: theme.preset,
+    accent: theme.accent,
+    customAccent: theme.customAccent,
+    wallpaper,
+    wallpaperImage,
+    wallpaperOpacity: theme.wallpaperOpacity,
+    wallpaperBlur: theme.wallpaperBlur,
+    wallpaperDim: theme.wallpaperDim,
+    corners: theme.corners,
+    blur: theme.blur,
+    colorMode: theme.colorMode,
+    density: theme.density,
+  });
+  refreshActive();
+  showToast(`已应用主题「${theme.name}」`, "info");
+}
+
+/** 自定义壁纸在前端压缩后写入设置，超限则拒绝。 */
+async function importWallpaper(file: File): Promise<void> {
+  if (!file.type.startsWith("image/")) {
+    showToast("请选择图片文件", "error");
+    return;
+  }
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / bitmap.width, 1000 / bitmap.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法创建画布");
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    let quality = 0.82;
+    let dataUrl = canvas.toDataURL("image/jpeg", quality);
+    while (dataUrl.length > WALLPAPER_MAX_CHARS && quality > 0.4) {
+      quality -= 0.1;
+      dataUrl = canvas.toDataURL("image/jpeg", quality);
+    }
+    if (dataUrl.length > WALLPAPER_MAX_CHARS) {
+      showToast("图片压缩后仍超出大小限制，请换一张更小的图片", "error");
+      return;
+    }
+    patchSettings({ wallpaperImage: dataUrl, wallpaper: "custom" });
+    refreshActive();
+    showToast("壁纸已更新", "success");
+  } catch (error) {
+    showToast(`壁纸读取失败：${String(error)}`, "error");
+  }
+}
+
 function onModalInput(event: Event): void {
   const target = event.target as HTMLInputElement;
   if (target.matches("[data-new-category-input]")) {
     state.newCategoryDraft = target.value;
   } else if (target.matches("[data-cat-rename-input]")) {
     state.renameDraft = target.value;
+  } else if (target.matches("[data-custom-theme-name]")) {
+    state.customThemeName = target.value;
+  } else if (target.matches("[data-custom-accent]")) {
+    if (!HEX_COLOR.test(target.value)) return;
+    state.settings = { ...state.settings, accent: "custom", customAccent: target.value };
+    applyAppearance();
+    els.modalLayer.querySelectorAll(".swatch.is-selected").forEach((swatch) => {
+      swatch.classList.remove("is-selected");
+      swatch.setAttribute("aria-pressed", "false");
+    });
+    target.closest(".accent-picker")?.classList.add("is-selected");
+  } else if (target.matches("[data-wallpaper-range]")) {
+    const key = target.dataset.wallpaperRange as WallpaperSliderKey | undefined;
+    if (key !== "opacity" && key !== "blur" && key !== "dim") return;
+    const min = key === "opacity" ? 20 : 0;
+    const max = key === "opacity" ? 100 : key === "blur" ? 40 : 70;
+    const value = clampNumber(Number(target.value), min, max);
+    const next: Settings = { ...state.settings };
+    if (key === "opacity") next.wallpaperOpacity = value;
+    else if (key === "blur") next.wallpaperBlur = value;
+    else next.wallpaperDim = value;
+    state.settings = next;
+    applyAppearance();
+    const label = els.modalLayer.querySelector<HTMLElement>(`[data-wallpaper-value="${key}"]`);
+    if (label) label.textContent = `${value}${key === "blur" ? "px" : "%"}`;
   }
 }
 
@@ -7475,9 +7827,10 @@ document.getElementById("btn-settings")?.addEventListener("click", () => openSet
 document.getElementById("btn-add-category")?.addEventListener("click", () => openSettings("categories"));
 
 document.getElementById("btn-theme-quick")?.addEventListener("click", () => {
-  const theme: ThemeId = state.settings.theme === "win11" ? "miuix" : "win11";
-  patchSettings({ theme });
-  showToast(`已切换到 ${theme === "miuix" ? "Miuix 风格" : "Windows 11 风格"}`, "info");
+  const index = THEME_OPTIONS.findIndex((item) => item.id === state.settings.theme);
+  const next = THEME_OPTIONS[(index + 1) % THEME_OPTIONS.length] ?? THEME_OPTIONS[0];
+  patchSettings({ theme: next.id });
+  showToast(`已切换到 ${next.name}`, "info");
 });
 
 els.btnSort.addEventListener("click", () => {
@@ -7670,9 +8023,19 @@ els.app.addEventListener("contextmenu", (event) => {
 
 els.modalLayer.addEventListener("click", (event) => void onModalClick(event));
 els.modalLayer.addEventListener("change", (event) => {
-  const select = (event.target as HTMLElement).closest<HTMLSelectElement>(
-    "[data-hotkey-app-pick]",
-  );
+  const target = event.target as HTMLElement;
+  const fileInput = target.closest<HTMLInputElement>("[data-wallpaper-file]");
+  if (fileInput) {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    if (file) void importWallpaper(file);
+    return;
+  }
+  if (target.matches("[data-wallpaper-range]") || target.matches("[data-custom-accent]")) {
+    queueSave();
+    return;
+  }
+  const select = target.closest<HTMLSelectElement>("[data-hotkey-app-pick]");
   if (!select) return;
   state.hotkeyAppPick = select.value;
   refreshActive();

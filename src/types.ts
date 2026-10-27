@@ -1,7 +1,24 @@
-export type ThemeId = "miuix" | "win11";
-export type ThemePresetId = "default" | "ocean" | "forest" | "sunset" | "lavender" | "sakura";
+export type ThemeId = "win11" | "miuix" | "macos" | "mono";
+export type ThemePresetId =
+  | "default"
+  | "ocean"
+  | "forest"
+  | "sunset"
+  | "lavender"
+  | "sakura"
+  | "nebula"
+  | "mint"
+  | "graphite"
+  | "coffee"
+  | "aurora"
+  | "peach";
 export type ColorMode = "system" | "light" | "dark";
-export type AccentId = "blue" | "violet" | "orange" | "green" | "rose";
+export type AccentId = "blue" | "violet" | "orange" | "green" | "rose" | "cyan" | "amber" | "slate";
+/** 强调色可以是预设，也可以是用户自定义的十六进制颜色。 */
+export type AccentChoice = AccentId | "custom";
+export type WallpaperId = "none" | "aurora" | "dusk" | "sea" | "nebula" | "dots" | "grid" | "custom";
+export type CornerStyle = "soft" | "sharp" | "round";
+export type BlurLevel = "off" | "standard" | "strong";
 export type Density = "cozy" | "compact";
 export type SortMode = "name" | "recent" | "frequent";
 export type ViewMode = "grid" | "list";
@@ -40,13 +57,45 @@ export interface RecentEntry {
   at: number;
 }
 
+/** 用户保存的外观方案：一次性还原整套视觉参数。 */
+export interface CustomTheme {
+  id: string;
+  name: string;
+  theme: ThemeId;
+  preset: ThemePresetId;
+  accent: AccentChoice;
+  customAccent: string;
+  wallpaper: WallpaperId;
+  wallpaperImage: string;
+  wallpaperOpacity: number;
+  wallpaperBlur: number;
+  wallpaperDim: number;
+  corners: CornerStyle;
+  blur: BlurLevel;
+  colorMode: ColorMode;
+  density: Density;
+}
+
 export interface Settings {
   schemaVersion: number;
   theme: ThemeId;
   themePreset: ThemePresetId;
   colorMode: ColorMode;
-  accent: AccentId;
+  accent: AccentChoice;
+  /** 自定义强调色的十六进制值，仅在 accent === "custom" 时生效。 */
+  customAccent: string;
   density: Density;
+  /** 圆角档位：跟随主题 / 直角 / 大圆角。 */
+  corners: CornerStyle;
+  /** 面板模糊档位：关闭 / 标准 / 加强。 */
+  blur: BlurLevel;
+  wallpaper: WallpaperId;
+  /** 自定义壁纸的 data URL（已在前端压缩），仅 wallpaper === "custom" 时生效。 */
+  wallpaperImage: string;
+  wallpaperOpacity: number;
+  wallpaperBlur: number;
+  wallpaperDim: number;
+  customThemes: CustomTheme[];
   lowPower: boolean;
   scanUwp: boolean;
   includeSystemApps: boolean;

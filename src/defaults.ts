@@ -1,4 +1,12 @@
-import type { AccentId, Category, CategoryMeta, Settings, ThemePresetId } from "./types";
+import type {
+  AccentId,
+  Category,
+  CategoryMeta,
+  Settings,
+  ThemeId,
+  ThemePresetId,
+  WallpaperId,
+} from "./types";
 
 export const DEFAULT_CATEGORIES: Category[] = [
   { id: "dev", name: "开发工具", builtin: true },
@@ -43,6 +51,16 @@ export const ACCENTS: { id: AccentId; name: string; color: string }[] = [
   { id: "orange", name: "落日橙", color: "#d96a1e" },
   { id: "green", name: "松针绿", color: "#0e8a57" },
   { id: "rose", name: "烟粉", color: "#c53a6c" },
+  { id: "cyan", name: "青碧", color: "#0e7c9e" },
+  { id: "amber", name: "琥珀", color: "#b06b12" },
+  { id: "slate", name: "石墨蓝", color: "#55606f" },
+];
+
+export const THEME_OPTIONS: { id: ThemeId; name: string; short: string; note: string }[] = [
+  { id: "win11", name: "Windows 11", short: "Win11", note: "Fluent · 原生 Mica" },
+  { id: "miuix", name: "Miuix 风格", short: "Miuix", note: "HyperOS · 柔和大圆角" },
+  { id: "macos", name: "macOS 风格", short: "macOS", note: "SF 字体 · 通透侧栏" },
+  { id: "mono", name: "极简 Mono", short: "Mono", note: "直角 · 无模糊" },
 ];
 
 export const THEME_PRESETS: {
@@ -57,6 +75,23 @@ export const THEME_PRESETS: {
   { id: "sunset", name: "落日", note: "暖橙氛围", accent: "orange" },
   { id: "lavender", name: "暮紫", note: "柔和紫调", accent: "violet" },
   { id: "sakura", name: "樱粉", note: "轻盈粉调", accent: "rose" },
+  { id: "nebula", name: "星云", note: "深空紫蓝", accent: "violet" },
+  { id: "mint", name: "薄荷", note: "清透青绿", accent: "green" },
+  { id: "graphite", name: "石墨", note: "中性灰蓝", accent: "slate" },
+  { id: "coffee", name: "咖啡", note: "暖棕低饱和", accent: "amber" },
+  { id: "aurora", name: "极光", note: "青绿流光", accent: "cyan" },
+  { id: "peach", name: "蜜桃", note: "粉橙柔光", accent: "rose" },
+];
+
+export const WALLPAPERS: { id: WallpaperId; name: string; note: string }[] = [
+  { id: "none", name: "无壁纸", note: "仅主题氛围" },
+  { id: "aurora", name: "极光", note: "蓝紫青三色" },
+  { id: "dusk", name: "暮色", note: "暖橙余晖" },
+  { id: "sea", name: "海雾", note: "青蓝薄雾" },
+  { id: "nebula", name: "星云", note: "深空紫蓝" },
+  { id: "dots", name: "点阵", note: "细腻纹理" },
+  { id: "grid", name: "网格", note: "工程网格" },
+  { id: "custom", name: "自定义", note: "本地图片" },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -65,7 +100,16 @@ export const DEFAULT_SETTINGS: Settings = {
   themePreset: "default",
   colorMode: "system",
   accent: "blue",
+  customAccent: "#1b62d6",
   density: "cozy",
+  corners: "soft",
+  blur: "standard",
+  wallpaper: "none",
+  wallpaperImage: "",
+  wallpaperOpacity: 60,
+  wallpaperBlur: 0,
+  wallpaperDim: 0,
+  customThemes: [],
   lowPower: false,
   scanUwp: true,
   includeSystemApps: false,
@@ -106,6 +150,7 @@ export function cloneSettings(settings: Settings): Settings {
     recent: settings.recent.map((r) => ({ ...r })),
     usage: { ...(settings.usage ?? {}) },
     hidden: [...settings.hidden],
+    customThemes: (settings.customThemes ?? []).map((theme) => ({ ...theme })),
   };
 }
 

@@ -157,6 +157,49 @@ pub struct TerminateReport {
     pub failed: Vec<TerminateFailure>,
 }
 
+/// 用户保存的外观方案：主题、配色、壁纸与形状参数一次性还原。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub theme: String,
+    pub preset: String,
+    pub accent: String,
+    pub custom_accent: String,
+    pub wallpaper: String,
+    pub wallpaper_image: String,
+    pub wallpaper_opacity: u32,
+    pub wallpaper_blur: u32,
+    pub wallpaper_dim: u32,
+    pub corners: String,
+    pub blur: String,
+    pub color_mode: String,
+    pub density: String,
+}
+
+impl Default for CustomTheme {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            theme: "win11".to_string(),
+            preset: "default".to_string(),
+            accent: "blue".to_string(),
+            custom_accent: "#1b62d6".to_string(),
+            wallpaper: "none".to_string(),
+            wallpaper_image: String::new(),
+            wallpaper_opacity: 60,
+            wallpaper_blur: 0,
+            wallpaper_dim: 0,
+            corners: "soft".to_string(),
+            blur: "standard".to_string(),
+            color_mode: "system".to_string(),
+            density: "cozy".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -165,7 +208,16 @@ pub struct Settings {
     pub theme_preset: String,
     pub color_mode: String,
     pub accent: String,
+    pub custom_accent: String,
     pub density: String,
+    pub corners: String,
+    pub blur: String,
+    pub wallpaper: String,
+    pub wallpaper_image: String,
+    pub wallpaper_opacity: u32,
+    pub wallpaper_blur: u32,
+    pub wallpaper_dim: u32,
+    pub custom_themes: Vec<CustomTheme>,
     pub low_power: bool,
     pub scan_uwp: bool,
     pub include_system_apps: bool,
@@ -206,7 +258,16 @@ impl Default for Settings {
             theme_preset: "default".to_string(),
             color_mode: "system".to_string(),
             accent: "blue".to_string(),
+            custom_accent: "#1b62d6".to_string(),
             density: "cozy".to_string(),
+            corners: "soft".to_string(),
+            blur: "standard".to_string(),
+            wallpaper: "none".to_string(),
+            wallpaper_image: String::new(),
+            wallpaper_opacity: 60,
+            wallpaper_blur: 0,
+            wallpaper_dim: 0,
+            custom_themes: Vec::new(),
             low_power: false,
             scan_uwp: true,
             include_system_apps: false,

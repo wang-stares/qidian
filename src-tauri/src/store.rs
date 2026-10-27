@@ -110,14 +110,48 @@ fn snap(value: u32, allowed: &[u32], fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
+/// 自定义强调色只接受 #rrggbb，避免把任意 CSS 注入到内联样式里。
+fn sanitize_hex(value: &str) -> String {
+    let trimmed = value.trim();
+    let valid = trimmed.len() == 7
+        && trimmed.starts_with('#')
+        && trimmed[1..].chars().all(|char| char.is_ascii_hexdigit());
+    if valid {
+        trimmed.to_ascii_lowercase()
+    } else {
+        "#1b62d6".to_string()
+    }
+}
+
+/// 自定义壁纸只接受 data URL 形式的图片，长度上限约 1.5M 字符。
+fn sanitize_wallpaper_image(value: &str) -> String {
+    const MAX_IMAGE_CHARS: usize = 1_500_000;
+    if value.starts_with("data:image/") && value.len() <= MAX_IMAGE_CHARS {
+        value.to_string()
+    } else {
+        String::new()
+    }
+}
+
 pub fn sanitize_settings(settings: &mut Settings) {
     const MAX_CATEGORIES: usize = 20;
-    if !matches!(settings.theme.as_str(), "miuix" | "win11") {
+    if !matches!(settings.theme.as_str(), "miuix" | "win11" | "macos" | "mono") {
         settings.theme = "win11".to_string();
     }
     if !matches!(
         settings.theme_preset.as_str(),
-        "default" | "ocean" | "forest" | "sunset" | "lavender" | "sakura"
+        "default"
+            | "ocean"
+            | "forest"
+            | "sunset"
+            | "lavender"
+            | "sakura"
+            | "nebula"
+            | "mint"
+            | "graphite"
+            | "coffee"
+            | "aurora"
+            | "peach"
     ) {
         settings.theme_preset = "default".to_string();
     }
@@ -126,12 +160,66 @@ pub fn sanitize_settings(settings: &mut Settings) {
     }
     if !matches!(
         settings.accent.as_str(),
-        "blue" | "violet" | "orange" | "green" | "rose"
+        "blue" | "violet" | "orange" | "green" | "rose" | "cyan" | "amber" | "slate" | "custom"
     ) {
         settings.accent = "blue".to_string();
     }
+    settings.custom_accent = sanitize_hex(&settings.custom_accent);
     if !matches!(settings.density.as_str(), "cozy" | "compact") {
         settings.density = "cozy".to_string();
+    }
+    if !matches!(settings.corners.as_str(), "soft" | "sharp" | "round") {
+        settings.corners = "soft".to_string();
+    }
+    if !matches!(settings.blur.as_str(), "off" | "standard" | "strong") {
+        settings.blur = "standard".to_string();
+    }
+    if !matches!(
+        settings.wallpaper.as_str(),
+        "none" | "aurora" | "dusk" | "sea" | "nebula" | "dots" | "grid" | "custom"
+    ) {
+        settings.wallpaper = "none".to_string();
+    }
+    settings.wallpaper_image = sanitize_wallpaper_image(&settings.wallpaper_image);
+    settings.wallpaper_opacity = settings.wallpaper_opacity.min(100).max(20);
+    settings.wallpaper_blur = settings.wallpaper_blur.min(40);
+    settings.wallpaper_dim = settings.wallpaper_dim.min(70);
+    if settings.wallpaper == "custom" && settings.wallpaper_image.is_empty() {
+        settings.wallpaper = "none".to_string();
+    }
+    settings.custom_themes.truncate(12);
+    for theme in &mut settings.custom_themes {
+        if theme.name.trim().is_empty() {
+            theme.name = "我的主题".to_string();
+        }
+        theme.name = theme.name.trim().chars().take(16).collect();
+        theme.id = theme.id.trim().chars().take(40).collect();
+        if !matches!(theme.theme.as_str(), "miuix" | "win11" | "macos" | "mono") {
+            theme.theme = "win11".to_string();
+        }
+        if !matches!(theme.color_mode.as_str(), "system" | "light" | "dark") {
+            theme.color_mode = "system".to_string();
+        }
+        if !matches!(theme.corners.as_str(), "soft" | "sharp" | "round") {
+            theme.corners = "soft".to_string();
+        }
+        if !matches!(theme.blur.as_str(), "off" | "standard" | "strong") {
+            theme.blur = "standard".to_string();
+        }
+        if !matches!(
+            theme.wallpaper.as_str(),
+            "none" | "aurora" | "dusk" | "sea" | "nebula" | "dots" | "grid" | "custom"
+        ) {
+            theme.wallpaper = "none".to_string();
+        }
+        theme.custom_accent = sanitize_hex(&theme.custom_accent);
+        theme.wallpaper_image = sanitize_wallpaper_image(&theme.wallpaper_image);
+        theme.wallpaper_opacity = theme.wallpaper_opacity.min(100).max(20);
+        theme.wallpaper_blur = theme.wallpaper_blur.min(40);
+        theme.wallpaper_dim = theme.wallpaper_dim.min(70);
+        if theme.wallpaper == "custom" && theme.wallpaper_image.is_empty() {
+            theme.wallpaper = "none".to_string();
+        }
     }
     if !matches!(settings.auto_refresh_hours, 0 | 6 | 12 | 24 | 168) {
         settings.auto_refresh_hours = 12;
