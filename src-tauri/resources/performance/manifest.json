@@ -1,0 +1,19 @@
+{
+  "id": "performance",
+  "name": "系统体检",
+  "version": "1.5.0",
+  "minAppVersion": "0.15.0",
+  "runtime": "in-app",
+  "features": [
+    "health-score",
+    "score-breakdown",
+    "report-copy",
+    "cpu-sampling",
+    "multi-disk",
+    "disk-health",
+    "resource-hogs",
+    "score-history",
+    "clean-stats"
+  ],
+  "description": "只做体检不插手优化：系统健康评分（每项扣分可见）、CPU 与多磁盘状态、物理磁盘健康、资源占用排行与评分趋势，并支持一键复制体检报告。清理、一键优化、电源与 DNS 等优化动作已拆分到「系统优化」插件，不常驻后台，不联网。"
+}

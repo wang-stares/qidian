@@ -1,0 +1,401 @@
+:root {
+  --motion-fast: 120ms;
+  --motion-med: 190ms;
+  --motion-slow: 260ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-std: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --preset-wash: none;
+}
+
+/* 派生色必须声明在 --accent / color 生效的 .app 上：
+   写在 :root 时 var(--accent) 为空，整条声明会失效，所有用到它的背景都会变透明。 */
+.app {
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+  --scroll-thumb: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+[data-accent="blue"] {
+  --accent: #1b62d6;
+  --accent-fg: #ffffff;
+}
+[data-accent="violet"] {
+  --accent: #6e4be0;
+  --accent-fg: #ffffff;
+}
+[data-accent="orange"] {
+  --accent: #d96a1e;
+  --accent-fg: #ffffff;
+}
+[data-accent="green"] {
+  --accent: #0e8a57;
+  --accent-fg: #ffffff;
+}
+[data-accent="rose"] {
+  --accent: #c53a6c;
+  --accent-fg: #ffffff;
+}
+
+[data-mode="dark"][data-accent="blue"] {
+  --accent: #6cb6ff;
+  --accent-fg: #06131f;
+}
+[data-mode="dark"][data-accent="violet"] {
+  --accent: #b9a3ff;
+  --accent-fg: #140b2c;
+}
+[data-mode="dark"][data-accent="orange"] {
+  --accent: #ffb067;
+  --accent-fg: #241206;
+}
+[data-mode="dark"][data-accent="green"] {
+  --accent: #6ddcb2;
+  --accent-fg: #042018;
+}
+[data-mode="dark"][data-accent="rose"] {
+  --accent: #ff9dbb;
+  --accent-fg: #2a0814;
+}
+
+/* ── 主题配色：背景氛围 ───────────────────────────────────────── */
+[data-preset="ocean"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(27, 98, 214, 0.15), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(14, 165, 165, 0.1), transparent 72%);
+}
+[data-preset="forest"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(14, 138, 87, 0.15), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(132, 204, 22, 0.09), transparent 72%);
+}
+[data-preset="sunset"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(217, 106, 30, 0.16), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(197, 58, 108, 0.09), transparent 72%);
+}
+[data-preset="lavender"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(110, 75, 224, 0.14), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(47, 111, 235, 0.08), transparent 72%);
+}
+[data-preset="sakura"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(197, 58, 108, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(217, 106, 30, 0.08), transparent 72%);
+}
+
+[data-mode="dark"][data-preset="ocean"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(108, 182, 255, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(45, 212, 191, 0.07), transparent 72%);
+}
+[data-mode="dark"][data-preset="forest"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(109, 220, 178, 0.12), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(163, 230, 53, 0.06), transparent 72%);
+}
+[data-mode="dark"][data-preset="sunset"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(255, 176, 103, 0.13), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(255, 157, 187, 0.07), transparent 72%);
+}
+[data-mode="dark"][data-preset="lavender"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(185, 163, 255, 0.12), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(108, 182, 255, 0.06), transparent 72%);
+}
+[data-mode="dark"][data-preset="sakura"] {
+  --preset-wash:
+    linear-gradient(155deg, rgba(255, 157, 187, 0.11), transparent 58%),
+    radial-gradient(70% 60% at 0% 100%, rgba(255, 176, 103, 0.06), transparent 72%);
+}
+
+/* ── Windows 11 / Fluent ─────────────────────────────────────── */
+[data-theme="win11"] {
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+
+  --titlebar-h: 40px;
+  --titlebar-pad-left: 14px;
+  --rail-w: 236px;
+  --rail-margin: 0;
+  --rail-radius: 0;
+  --rail-item-h: 36px;
+  --rail-item-radius: 4px;
+  --rail-label-size: 10.5px;
+  --rail-label-spacing: 0.08em;
+  --main-pad-x: 26px;
+  --main-pad-top: 16px;
+  --tile-min: 96px;
+  --tile-h: 106px;
+  --icon-size: 40px;
+  --icon-radius: 9px;
+  --tile-radius: 4px;
+  --gap-grid: 4px;
+  --section-gap: 22px;
+  --search-h: 36px;
+  --search-radius: 4px;
+  --control-radius: 4px;
+  --panel-radius: 0px;
+  --dialog-radius: 8px;
+  --settings-card-radius: 6px;
+  --inspector-inset: 10px;
+  --inspector-w: 306px;
+  --panel-blur: 26px;
+  --tile-border: transparent;
+  --tile-lift: 0px;
+  --view-title-size: 24px;
+  --view-title-weight: 600;
+  --quickbar-radius: 4px;
+  --button-weight: 500;
+  --titlebar-crumb-display: inline-flex;
+  --brand-tag-display: inline-flex;
+  --section-line-display: block;
+  --tile-bg: transparent;
+  --tile-shadow: none;
+  --checkbox-radius: 4px;
+}
+
+/* ── Miuix / HyperOS ──────────────────────────────────────────── */
+[data-theme="miuix"] {
+  --font-ui: "MiSans", "MiSans VF", "HarmonyOS Sans SC", "Source Han Sans SC",
+    "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  --font-display: "MiSans", "MiSans VF", "HarmonyOS Sans SC", "Source Han Sans SC",
+    "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Microsoft YaHei UI", monospace;
+
+  --titlebar-h: 48px;
+  --titlebar-pad-left: 18px;
+  --rail-w: 226px;
+  --rail-margin: 2px 0 12px 12px;
+  --rail-radius: 24px;
+  --rail-item-h: 42px;
+  --rail-item-radius: 14px;
+  --rail-label-size: 11.5px;
+  --rail-label-spacing: 0.02em;
+  --main-pad-x: 32px;
+  --main-pad-top: 20px;
+  --tile-min: 108px;
+  --tile-h: 128px;
+  --icon-size: 48px;
+  --icon-radius: 14px;
+  --tile-radius: 18px;
+  --gap-grid: 10px;
+  --section-gap: 28px;
+  --search-h: 42px;
+  --search-radius: 999px;
+  --control-radius: 14px;
+  --panel-radius: 24px;
+  --dialog-radius: 26px;
+  --settings-card-radius: 18px;
+  --inspector-inset: 14px;
+  --inspector-w: 314px;
+  --panel-blur: 30px;
+  --tile-border: var(--stroke);
+  --tile-lift: -1px;
+  --view-title-size: 32px;
+  --view-title-weight: 700;
+  --quickbar-radius: 999px;
+  --button-weight: 650;
+  --titlebar-crumb-display: none;
+  --brand-tag-display: inline-flex;
+  --section-line-display: none;
+  --tile-bg: var(--tile-surface);
+  --tile-shadow: var(--shadow-tile);
+  --checkbox-radius: 999px;
+}
+
+/* Win11 light */
+[data-theme="win11"][data-mode="light"] {
+  --app-bg: rgba(243, 244, 246, 0.87);
+  --app-tint: rgba(255, 255, 255, 0.34);
+  --bg-warm: color-mix(in srgb, var(--accent) 4%, transparent);
+  --panel: rgba(236, 240, 245, 0.58);
+  --panel-strong: rgba(251, 252, 253, 0.82);
+  --surface: rgba(255, 255, 255, 0.58);
+  --surface-solid: #fbfbfc;
+  --surface-2: rgba(0, 0, 0, 0.032);
+  --surface-3: rgba(0, 0, 0, 0.055);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.62);
+  --tile-active: rgba(255, 255, 255, 0.86);
+  --stroke: rgba(0, 0, 0, 0.058);
+  --stroke-2: rgba(0, 0, 0, 0.11);
+  --divider: rgba(0, 0, 0, 0.075);
+  --text: #1a1a1a;
+  --text-2: #4e4e4e;
+  --text-3: #6f6f6f;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(0, 0, 0, 0.043);
+  --hover-strong: rgba(0, 0, 0, 0.07);
+  --dialog-bg: #f9f9fa;
+  --flyout-bg: rgba(252, 252, 252, 0.9);
+  --toast-bg: rgba(43, 43, 43, 0.94);
+  --toast-text: #ffffff;
+  --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.1);
+  --success: #0f7b0f;
+  --warning: #9d5d00;
+  --window-border: rgba(255, 255, 255, 0.5);
+  --shadow-tile: none;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-flyout: 0 16px 44px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-dialog: 0 36px 90px rgba(0, 0, 0, 0.26), 0 2px 10px rgba(0, 0, 0, 0.08);
+  --shadow-window: 0 36px 90px rgba(0, 0, 0, 0.42);
+  --skeleton-a: rgba(0, 0, 0, 0.035);
+  --skeleton-b: rgba(0, 0, 0, 0.07);
+  --wc-hover: rgba(0, 0, 0, 0.055);
+}
+
+/* Win11 dark */
+[data-theme="win11"][data-mode="dark"] {
+  --app-bg: rgba(27, 27, 28, 0.9);
+  --app-tint: rgba(255, 255, 255, 0.015);
+  --bg-warm: color-mix(in srgb, var(--accent) 5%, transparent);
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-strong: rgba(38, 38, 40, 0.86);
+  --surface: rgba(255, 255, 255, 0.052);
+  --surface-solid: #2c2c2e;
+  --surface-2: rgba(255, 255, 255, 0.048);
+  --surface-3: rgba(255, 255, 255, 0.075);
+  --tile-surface: transparent;
+  --tile-hover: rgba(255, 255, 255, 0.068);
+  --tile-active: rgba(255, 255, 255, 0.1);
+  --stroke: rgba(255, 255, 255, 0.072);
+  --stroke-2: rgba(255, 255, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.082);
+  --text: #ffffff;
+  --text-2: #d2d2d2;
+  --text-3: #a2a2a2;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(255, 255, 255, 0.062);
+  --hover-strong: rgba(255, 255, 255, 0.1);
+  --dialog-bg: #2a2a2c;
+  --flyout-bg: rgba(44, 44, 46, 0.92);
+  --toast-bg: rgba(243, 243, 243, 0.96);
+  --toast-text: #1a1a1a;
+  --danger: #ff99a8;
+  --danger-soft: rgba(255, 110, 132, 0.12);
+  --success: #6ddcb2;
+  --warning: #ffb067;
+  --window-border: rgba(255, 255, 255, 0.09);
+  --shadow-tile: none;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-flyout: 0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-dialog: 0 40px 100px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.3);
+  --shadow-window: 0 36px 100px rgba(0, 0, 0, 0.6);
+  --skeleton-a: rgba(255, 255, 255, 0.04);
+  --skeleton-b: rgba(255, 255, 255, 0.08);
+  --wc-hover: rgba(255, 255, 255, 0.06);
+}
+
+/* Miuix light */
+[data-theme="miuix"][data-mode="light"] {
+  --app-bg: rgba(244, 242, 236, 0.94);
+  --app-tint: rgba(255, 255, 255, 0.42);
+  --bg-warm: color-mix(in srgb, var(--accent) 7%, transparent);
+  --panel: rgba(250, 249, 246, 0.74);
+  --panel-strong: rgba(252, 251, 248, 0.9);
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(28, 24, 18, 0.035);
+  --surface-3: rgba(28, 24, 18, 0.06);
+  --tile-surface: rgba(255, 255, 255, 0.64);
+  --tile-hover: rgba(255, 255, 255, 0.96);
+  --tile-active: #ffffff;
+  --stroke: rgba(28, 24, 18, 0.055);
+  --stroke-2: rgba(28, 24, 18, 0.1);
+  --divider: rgba(28, 24, 18, 0.06);
+  --text: #17130d;
+  --text-2: #655f55;
+  --text-3: #8a8377;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(28, 24, 18, 0.045);
+  --hover-strong: rgba(28, 24, 18, 0.075);
+  --dialog-bg: #fbfaf7;
+  --flyout-bg: rgba(252, 251, 248, 0.92);
+  --toast-bg: rgba(23, 19, 13, 0.94);
+  --toast-text: #fffdf8;
+  --danger: #c03a2b;
+  --danger-soft: rgba(192, 58, 43, 0.09);
+  --success: #0f8a57;
+  --warning: #b26a1a;
+  --window-border: rgba(255, 255, 255, 0.5);
+  --shadow-tile: 0 1px 2px rgba(51, 42, 28, 0.025), 0 7px 22px rgba(51, 42, 28, 0.035);
+  --shadow-panel: 0 2px 4px rgba(51, 42, 28, 0.025), 0 18px 44px rgba(51, 42, 28, 0.055);
+  --shadow-flyout: 0 20px 50px rgba(51, 42, 28, 0.16), 0 2px 8px rgba(51, 42, 28, 0.05);
+  --shadow-dialog: 0 34px 90px rgba(51, 42, 28, 0.2), 0 2px 8px rgba(51, 42, 28, 0.04);
+  --shadow-window: 0 40px 100px rgba(20, 16, 10, 0.46);
+  --skeleton-a: rgba(28, 24, 18, 0.04);
+  --skeleton-b: rgba(28, 24, 18, 0.075);
+  --wc-hover: rgba(28, 24, 18, 0.055);
+}
+
+/* Miuix dark */
+[data-theme="miuix"][data-mode="dark"] {
+  --app-bg: rgba(11, 11, 12, 0.94);
+  --app-tint: rgba(255, 255, 255, 0.012);
+  --bg-warm: color-mix(in srgb, var(--accent) 8%, transparent);
+  --panel: rgba(25, 25, 27, 0.72);
+  --panel-strong: rgba(26, 26, 28, 0.92);
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-solid: #1c1c1f;
+  --surface-2: rgba(255, 255, 255, 0.05);
+  --surface-3: rgba(255, 255, 255, 0.08);
+  --tile-surface: rgba(255, 255, 255, 0.052);
+  --tile-hover: rgba(255, 255, 255, 0.086);
+  --tile-active: rgba(255, 255, 255, 0.11);
+  --stroke: rgba(255, 255, 255, 0.065);
+  --stroke-2: rgba(255, 255, 255, 0.12);
+  --divider: rgba(255, 255, 255, 0.075);
+  --text: #f4f1ea;
+  --text-2: #ada79e;
+  --text-3: #857f76;
+  --text-on-accent: var(--accent-fg);
+  --hover: rgba(255, 255, 255, 0.06);
+  --hover-strong: rgba(255, 255, 255, 0.095);
+  --dialog-bg: #19191c;
+  --flyout-bg: rgba(30, 30, 33, 0.94);
+  --toast-bg: rgba(244, 241, 234, 0.96);
+  --toast-text: #16130e;
+  --danger: #ff9a8d;
+  --danger-soft: rgba(255, 120, 110, 0.12);
+  --success: #6ddcb2;
+  --warning: #ffb067;
+  --window-border: rgba(255, 255, 255, 0.08);
+  --shadow-tile: 0 6px 20px rgba(0, 0, 0, 0.16);
+  --shadow-panel: 0 2px 4px rgba(0, 0, 0, 0.2), 0 20px 48px rgba(0, 0, 0, 0.28);
+  --shadow-flyout: 0 24px 60px rgba(0, 0, 0, 0.58), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-dialog: 0 40px 100px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-window: 0 40px 100px rgba(0, 0, 0, 0.72);
+  --skeleton-a: rgba(255, 255, 255, 0.035);
+  --skeleton-b: rgba(255, 255, 255, 0.075);
+  --wc-hover: rgba(255, 255, 255, 0.075);
+}
+
+[data-density="compact"] {
+  --tile-h: 92px;
+  --tile-min: 88px;
+  --icon-size: 34px;
+  --gap-grid: 2px;
+  --section-gap: 18px;
+  --main-pad-top: 14px;
+}
+[data-theme="miuix"][data-density="compact"] {
+  --tile-h: 112px;
+  --tile-min: 96px;
+  --icon-size: 40px;
+  --gap-grid: 8px;
+  --section-gap: 22px;
+  --main-pad-top: 16px;
+}
+
+.app[data-lowpower="true"] {
+  --motion-fast: 0ms;
+  --motion-med: 0ms;
+  --motion-slow: 0ms;
+}

@@ -1,0 +1,142 @@
+# 启点 QiDian
+
+> 一个安静、轻量的 Windows 应用分类启动台 + 系统优化工具箱。
+> 作者：**望满天星辰** · 原创项目
+
+**启点（QiDian）** 是一款面向 Windows 10 / 11 的本地工具：它自动扫描本机的全部应用并按分类整理成启动台，同时内置一套插件化的「体检 / 优化 / 内存 / 后台 / 应用管理 / 启动与托盘」工具箱，让小白也能一键完成系统优化。所有操作都在本机完成，不联网、无广告、不常驻后台。
+
+<p align="center">
+  <img src="src-tauri/icons/icon.png" width="128" alt="启点图标" />
+</p>
+
+## 功能一览
+
+### 🚀 应用启动台
+
+- 自动扫描开始菜单、桌面、任务栏快捷方式、卸载注册表、App Paths 与 Microsoft Store 应用
+- 按分类整理（开发工具 / 办公协作 / 设计创作 / 影音娱乐 / 游戏 / 社交通讯 / 网络浏览 / 安全工具 / 系统工具 / 其他），分类可自定义
+- 三种排序方式：**名称 / 最近使用 / 常用优先**（每次启动自动累加计数）
+- 网格 / 列表两种视图，常用应用（固定）快捷栏、最近使用视图
+- 高性能：图标磁盘缓存 + 内存 LRU（上限 600）+ 6 线程并行提取 + 网格分帧渲染，万级目录秒开
+
+### 🩺 系统体检
+
+- 系统健康评分：内存 / CPU / 磁盘 / 启动项综合打分，每项扣分明细可见
+- CPU 与多磁盘状态、物理磁盘健康（SMART 摘要）、资源占用排行、评分趋势
+- 一键**复制体检报告**：把系统版本、硬件状态、扣分项整理成纯文本，方便求助
+
+### ⚡ 系统优化
+
+- 可撤销的一键优化：51 项注册表策略（参考 Winhance / WinUtil / Optimizer），写入前自动备份原值、写入后回读校验，可按隐私 / 性能 / 服务 / 更新分类筛选，单项或全部还原
+- 27 处垃圾清理：系统临时文件、更新缓存、浏览器与聊天软件缓存、转储、回收站、Windows.old
+- 电源计划切换（含隐藏的**卓越性能**方案自动创建）
+- **网络优化**：阿里 / 腾讯 / Google / Cloudflare 公共 DNS 一键切换（自动备份、可还原）+ 网络连通性诊断 + 刷新 DNS 缓存
+- 深层内存清理（管理员级系统缓存 / 待机列表）
+
+### 🧠 内存管理
+
+- 自动识别物理内存与提交内存，按压力动态调节启点自身 WebView2 档位
+- 工作集释放、管理员级系统缓存清理、空闲自动释放、隐藏挂起
+- 全屏 / 电池供电自动降级，保证不干扰工作
+
+### 🛡️ 后台管理
+
+- 全量自启动扫描：注册表 Run/RunOnce、启动文件夹、计划任务、自动服务
+- 启动项**影响评估**（高/中/低）与建议（保留 / 关闭 / 可选），一键关闭建议项
+- 运行中进程按应用分组，说明每个进程的用途，关键进程保护
+
+### 🗑️ 应用管理
+
+- 已安装应用列表（搜索 + 按占用排序），调用应用自带卸载程序
+- **完全清除**：卸载后可选择连安装文件夹一并删除，删除前再次核对引用
+- 扫描安装目录与应用数据目录，标注疑似残留，确认后删除（可选回收站）
+
+### 🔑 启动与托盘
+
+- 托盘快捷启动常用应用、自定义全局快捷键（显示/隐藏、为应用设置启动快捷键）
+- 开机自启动、关闭行为可选（最小化到托盘 / 退出）
+
+## 界面预览
+
+| 亮色主题 | 暗色主题 |
+| --- | --- |
+| ![亮色](preview/win11-light.png) | ![暗色](preview/miuix-dark.png) |
+
+## 系统要求
+
+- Windows 10 1809（Build 17763）或更高版本；Windows 11 已内置 WebView2
+- Windows 10 需要安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+- x64 架构
+- 部分系统级功能（深层内存清理、公共 DNS 切换、系统级临时文件清理）需要管理员权限，安装程序默认以管理员安装
+
+## 安装
+
+直接下载 [Releases](https://github.com/lqx-shuaige/qidian/releases) 中的安装包：
+
+- `QiDian-Setup-x.y.z-x64.exe` —— NSIS 安装包，建议使用
+- `QiDian-x.y.z-win64.zip` —— 绿色免安装版（含安装包与 SHA256 校验）
+
+## 从源码构建
+
+```bash
+# 1. 安装前端依赖
+npm install
+
+# 2. 构建前端
+npm run build
+
+# 3. 交叉编译 Windows 后端（Linux/macOS 上使用 cargo-xwin；Windows 直接 cargo build）
+cargo install cargo-xwin
+cd src-tauri
+cargo xwin build --release --features custom-protocol --target x86_64-pc-windows-msvc
+
+# 4. 打包 NSIS 安装程序（需要 makensis）
+cd installer && makensis QiDian.nsi
+```
+
+> 浏览器预览（不依赖 Windows）：`npm run preview`，前端会使用演示数据。
+
+## 技术栈
+
+| 层 | 技术 |
+| --- | --- |
+| 桌面框架 | [Tauri 2](https://tauri.app) + Rust 2021（`windows` / `winreg` / `windows-core`） |
+| 前端 | TypeScript + Vite，手写渲染（无框架），单文件 `main.ts` + rAF 合并渲染 |
+| 界面 | 原生 CSS（tokens + components），Miuix / Win11 两套主题，6 种强调色 |
+| 打包 | NSIS（管理员权限、WebView2 检测、卸载器） |
+| 图标 | 自研 PIL 生成脚本（`scripts/gen-icons.py`，4× 超采样 + 小尺寸分级） |
+
+## 目录结构
+
+```
+qidian/
+├── src/                  # 前端源码（main.ts / api.ts / mock.ts / types.ts / style）
+├── src-tauri/
+│   ├── src/              # Rust 后端（lib.rs + 各功能模块 .rs）
+│   ├── resources/        # 插件清单（manifest.json）
+│   ├── icons/            # 应用图标
+│   └── Cargo.toml
+├── installer/            # NSIS 安装脚本
+├── scripts/              # 版本管理 / 图标生成 / 更新公告脚本
+├── preview/              # 界面截图
+└── CHANGELOG.md          # 更新日志
+```
+
+## 设计原则
+
+- **只读优先**：体检只读不改；优化类动作写入前备份、写入后回读校验，全部可还原
+- **插件化职责拆分**：体检 / 优化 / 内存 / 后台 / 应用管理 / 启动托盘各自独立，互不掺和
+- **本地优先**：全部操作在本机完成，不联网、不上传任何数据、不常驻后台
+- **性能优先**：TTL 缓存、并行提取、分帧渲染、LRU 上限，启动与滚动都保持流畅
+
+## 原创声明
+
+本项目为 **望满天星辰** 的原创作品，从 0 到 0.23 逐版本独立设计与实现，未复制任何现有应用的界面与代码；部分优化项的注册表策略参考了 Winhance / WinUtil / Optimizer 等开源项目的公开资料。
+
+## 更新日志
+
+完整的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 望满天星辰

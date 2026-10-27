@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>启点</title>
+    <link rel="stylesheet" href="/src/style/app.css" />
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+          <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
+          <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+          <rect x="13.5" y="13.5" width="7" height="7" rx="2" />
+        </symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7.5V12l3 1.8" />
+        </symbol>
+        <symbol id="i-star" viewBox="0 0 24 24">
+          <path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8L12 3.6Z" />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.8" cy="10.8" r="6.6" />
+          <path d="M15.6 15.6l4.3 4.3" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path d="M12 5v14M5 12h14" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h9M17 17h3" />
+          <circle cx="15" cy="7" r="2" />
+          <circle cx="9" cy="12" r="2" />
+          <circle cx="15" cy="17" r="2" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path d="M20 11a8 8 0 1 0-.6 4.2" />
+          <path d="M20 4.5V11h-6" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </symbol>
+        <symbol id="i-minimize" viewBox="0 0 24 24">
+          <path d="M5 12h14" />
+        </symbol>
+        <symbol id="i-maximize" viewBox="0 0 24 24">
+          <rect x="5.5" y="5.5" width="13" height="13" rx="1.2" />
+        </symbol>
+        <symbol id="i-restore" viewBox="0 0 24 24">
+          <rect x="5" y="8" width="11" height="11" rx="1.2" />
+          <path d="M8 8V5.6c0-.6.4-1 1-1h9.4c.6 0 1 .4 1 1V15c0 .6-.4 1-1 1H16" />
+        </symbol>
+        <symbol id="i-chevron-down" viewBox="0 0 24 24">
+          <path d="M6 9.5l6 6 6-6" />
+        </symbol>
+        <symbol id="i-chevron-right" viewBox="0 0 24 24">
+          <path d="M9.5 6l6 6-6 6" />
+        </symbol>
+        <symbol id="i-chevron-left" viewBox="0 0 24 24">
+          <path d="M14.5 6l-6 6 6 6" />
+        </symbol>
+        <symbol id="i-arrow-up-right" viewBox="0 0 24 24">
+          <path d="M7 17L17 7M9 7h8v8" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path d="M3.5 8.5c0-1.1.9-2 2-2h4l2 2.2h7c1.1 0 2 .9 2 2v7.8c0 1.1-.9 2-2 2h-13c-1.1 0-2-.9-2-2V8.5Z" />
+        </symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24">
+          <path d="M9 3.8h6l-.8 5.2 3.3 3.3v2.2H6.5v-2.2l3.3-3.3L9 3.8Z" />
+          <path d="M12 14.5V21" />
+        </symbol>
+        <symbol id="i-eye-off" viewBox="0 0 24 24">
+          <path d="M3 3l18 18" />
+          <path d="M10.6 5.3A9.7 9.7 0 0 1 12 5c5.5 0 9 6.4 9 7 0 .3-.5 1.4-1.6 2.7M6.3 7.5C4.2 9.1 3 11 3 12c0 .6 3.5 7 9 7 1.4 0 2.7-.4 3.9-1" />
+          <path d="M9.9 10.2a3 3 0 0 0 4.1 4.2" />
+        </symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="M7 9.5l3 2.5-3 2.5M13 15h4" />
+        </symbol>
+        <symbol id="i-code" viewBox="0 0 24 24">
+          <path d="M9 7l-5 5 5 5M15 7l5 5-5 5" />
+        </symbol>
+        <symbol id="i-briefcase" viewBox="0 0 24 24">
+          <rect x="3" y="7.5" width="18" height="12" rx="2.5" />
+          <path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M3 12.5h18" />
+        </symbol>
+        <symbol id="i-palette" viewBox="0 0 24 24">
+          <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.6 0 2-1 1.5-2s.1-2 1.6-2H18a3 3 0 0 0 3-3c0-5.4-4-10-9-10Z" />
+          <circle cx="8" cy="9" r="1" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="7" r="1" fill="currentColor" stroke="none" />
+          <circle cx="16" cy="9" r="1" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol id="i-music" viewBox="0 0 24 24">
+          <path d="M9 17.5V6l10-2v11.5" />
+          <circle cx="6.5" cy="17.5" r="2.5" />
+          <circle cx="16.5" cy="15.5" r="2.5" />
+        </symbol>
+        <symbol id="i-gamepad" viewBox="0 0 24 24">
+          <path d="M8 8h8c3 0 5 3.2 4.2 6.3l-.7 2.5c-.4 1.5-2.4 1.9-3.3.7l-1.5-2.1H9.3l-1.5 2.1c-.9 1.2-2.9.8-3.3-.7l-.7-2.5C3 11.2 5 8 8 8Z" />
+          <path d="M8 11v3M6.5 12.5h3M15.5 11.5h.01M17.5 13.5h.01" />
+        </symbol>
+        <symbol id="i-chat" viewBox="0 0 24 24">
+          <path d="M4 5.5h16v10.2H9.5L5 20v-4.3H4V5.5Z" />
+          <path d="M8 9h8M8 12h5" />
+        </symbol>
+        <symbol id="i-globe" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5S14.4 18.1 12 20.5c-2.4-2.4-3.6-5.2-3.6-8.5S9.6 5.9 12 3.5Z" />
+        </symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="M12 3l7 2.8v5.4c0 4.3-2.8 7.6-7 9.8-4.2-2.2-7-5.5-7-9.8V5.8L12 3Z" />
+          <path d="M9 11.8l2 2 4-4" />
+        </symbol>
+        <symbol id="i-wrench" viewBox="0 0 24 24">
+          <path d="M14.5 6.5a4 4 0 0 0-5 5L4 17l3 3 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-2.5-2.5 2-2.2Z" />
+        </symbol>
+        <symbol id="i-box" viewBox="0 0 24 24">
+          <path d="M3.5 7.5L12 3.5l8.5 4v9L12 20.5l-8.5-4v-9Z" />
+          <path d="M3.5 7.5L12 11.5l8.5-4M12 11.5v9" />
+        </symbol>
+        <symbol id="i-layers" viewBox="0 0 24 24">
+          <path d="M12 3.5l8.5 4.3L12 12.2 3.5 7.8 12 3.5Z" />
+          <path d="M4 12.5l8 4 8-4M4 16.5l8 4 8-4" />
+        </symbol>
+        <symbol id="i-doc" viewBox="0 0 24 24">
+          <path d="M6 3.5h7l5 5v12H6v-17Z" />
+          <path d="M13 3.5v5h5M9 13h6M9 16.5h6" />
+        </symbol>
+        <symbol id="i-table" viewBox="0 0 24 24">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M4 9.5h16M9.5 9.5V20M4 15h16" />
+        </symbol>
+        <symbol id="i-monitor" viewBox="0 0 24 24">
+          <rect x="3" y="4.5" width="18" height="12" rx="2.5" />
+          <path d="M9 20h6M12 16.5V20" />
+        </symbol>
+        <symbol id="i-play" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M10 8.5l5.5 3.5-5.5 3.5v-7Z" />
+        </symbol>
+        <symbol id="i-zap" viewBox="0 0 24 24">
+          <path d="M13.5 2.5L4.8 13h6l-1.3 8.5L20 10.5h-6.5l0-8Z" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="M5 12.5l4.2 4.2L19 6.5" />
+        </symbol>
+        <symbol id="i-info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 11v5M12 7.8v.2" />
+        </symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="5.5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="18.5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol id="i-sort" viewBox="0 0 24 24">
+          <path d="M8 4v16M4.5 7.5L8 4l3.5 3.5M16 20V4M12.5 16.5L16 20l3.5-3.5" />
+        </symbol>
+        <symbol id="i-list" viewBox="0 0 24 24">
+          <path d="M8 6h12M8 12h12M8 18h12" />
+          <circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" />
+          <circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" />
+          <circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" />
+        </symbol>
+        <symbol id="i-sparkle" viewBox="0 0 24 24">
+          <path d="M12 3l1.7 4.9L18.5 9.6l-4.8 1.7L12 16l-1.7-4.7L5.5 9.6l4.8-1.7L12 3Z" />
+          <path d="M18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path d="M4.5 7h15M9 7V4.8h6V7M6.5 7l.8 12.2h9.4L17.5 7M10 10.5v5M14 10.5v5" />
+        </symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path d="M15.5 4.5l4 4L9 19H5v-4L15.5 4.5Z" />
+          <path d="M13.5 6.5l4 4" />
+        </symbol>
+        <symbol id="i-arrow-up" viewBox="0 0 24 24">
+          <path d="M12 19V5M6.5 10.5L12 5l5.5 5.5" />
+        </symbol>
+        <symbol id="i-arrow-down" viewBox="0 0 24 24">
+          <path d="M12 5v14M6.5 13.5L12 19l5.5-5.5" />
+        </symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3.8" />
+          <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" />
+        </symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24">
+          <path d="M20 14.3A8.5 8.5 0 0 1 9.7 4 8.5 8.5 0 1 0 20 14.3Z" />
+        </symbol>
+        <symbol id="i-auto" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="14" rx="3" />
+          <path d="M8 21h8M12 18v3" />
+          <path d="M8.5 13.5l2-5 2 5M9.3 12h2.4M14 13.5v-5h1.5a1.5 1.5 0 0 1 0 3H14" />
+        </symbol>
+        <symbol id="i-hard-drive" viewBox="0 0 24 24">
+          <rect x="3" y="5" width="18" height="14" rx="3" />
+          <path d="M7 15h.01M11 15h6" />
+        </symbol>
+        <symbol id="i-power" viewBox="0 0 24 24">
+          <path d="M12 3v8" />
+          <path d="M7.2 6.8a7.5 7.5 0 1 0 9.6 0" />
+        </symbol>
+        <symbol id="i-cpu" viewBox="0 0 24 24">
+          <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+          <rect x="9.5" y="9.5" width="5" height="5" rx="1" />
+          <path d="M9.5 3v3.5M14.5 3v3.5M9.5 17.5V21M14.5 17.5V21M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21" />
+        </symbol>
+        <symbol id="i-brand" viewBox="0 0 32 32">
+          <rect x="1" y="1" width="30" height="30" rx="9" fill="currentColor" />
+          <path d="M10 21.5L20.5 11M13.5 10.5h7.8v7.8" fill="none" stroke="white" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div id="app" class="app" data-theme="win11" data-mode="light" data-accent="blue" data-density="cozy" data-runtime="web" data-maximized="false">
+      <div class="backdrop" aria-hidden="true">
+        <div class="backdrop-glow"></div>
+      </div>
+
+      <header class="titlebar">
+        <div class="titlebar-drag" data-tauri-drag-region>
+          <div class="brand">
+            <svg class="brand-mark"><use href="#i-brand" /></svg>
+            <span class="brand-name">启点</span>
+            <span class="brand-tag">LAUNCH DECK</span>
+          </div>
+          <span class="titlebar-divider"></span>
+          <span class="titlebar-crumb" id="titlebar-crumb">全部应用</span>
+          <span class="scan-flag" id="scan-flag" hidden>
+            <span class="scan-dot"></span>
+            <span id="scan-flag-text">正在扫描</span>
+          </span>
+        </div>
+        <div class="titlebar-actions">
+          <button class="titlebar-btn theme-toggle" id="btn-theme-quick" aria-label="切换主题风格" title="切换主题风格">
+            <svg><use href="#i-layers" /></svg>
+            <span id="theme-quick-label">Win11</span>
+          </button>
+          <div class="window-controls" role="group" aria-label="窗口控制">
+            <button class="wc-btn" id="btn-min" aria-label="最小化" title="最小化"><svg><use href="#i-minimize" /></svg></button>
+            <button class="wc-btn" id="btn-max" aria-label="最大化" title="最大化"><svg><use href="#i-maximize" /></svg></button>
+            <button class="wc-btn wc-close" id="btn-close" aria-label="关闭窗口（隐藏到系统托盘）" title="关闭窗口（隐藏到系统托盘）"><svg><use href="#i-close" /></svg></button>
+          </div>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="rail" aria-label="分类导航">
+          <nav class="rail-main">
+            <div class="rail-label">浏览</div>
+            <div class="rail-group" id="rail-primary">
+              <button class="rail-item" data-nav="all" title="全部应用">
+                <svg class="rail-icon"><use href="#i-grid" /></svg>
+                <span class="rail-text">全部应用</span>
+                <span class="rail-count" data-count="all">0</span>
+              </button>
+              <button class="rail-item" data-nav="recent" title="最近使用">
+                <svg class="rail-icon"><use href="#i-clock" /></svg>
+                <span class="rail-text">最近使用</span>
+                <span class="rail-count" data-count="recent">0</span>
+              </button>
+              <button class="rail-item" data-nav="pinned" title="常用应用">
+                <svg class="rail-icon"><use href="#i-star" /></svg>
+                <span class="rail-text">常用应用</span>
+                <span class="rail-count" data-count="pinned">0</span>
+              </button>
+            </div>
+
+            <div class="rail-label rail-label-row">
+              <span>分类</span>
+              <button class="rail-mini-btn" id="btn-add-category" title="管理分类" aria-label="管理分类">
+                <svg><use href="#i-plus" /></svg>
+              </button>
+            </div>
+            <div class="rail-group" id="rail-categories"></div>
+          </nav>
+
+          <div class="rail-foot">
+            <button class="rail-settings" id="btn-settings">
+              <svg class="rail-icon"><use href="#i-settings" /></svg>
+              <span class="rail-text">设置</span>
+              <kbd class="rail-kbd">Ctrl ,</kbd>
+            </button>
+            <div class="rail-note">
+              <svg><use href="#i-shield" /></svg>
+              <span>本地扫描 · 无联网</span>
+            </div>
+          </div>
+        </aside>
+
+        <main class="main">
+          <nav class="surface-tabs" id="surface-tabs" role="tablist" aria-label="功能标签" hidden></nav>
+          <header class="main-head">
+            <div class="head-copy">
+              <h1 class="view-title" id="view-title">全部应用</h1>
+              <p class="view-sub" id="view-sub">正在载入…</p>
+            </div>
+            <div class="head-actions">
+              <label class="search" for="search-input">
+                <svg class="search-icon"><use href="#i-search" /></svg>
+                <input id="search-input" type="text" spellcheck="false" autocomplete="off" placeholder="搜索应用" aria-label="搜索应用" />
+                <kbd class="search-kbd" id="search-kbd">Ctrl K</kbd>
+                <button class="search-clear" id="btn-search-clear" hidden aria-label="清除搜索">
+                  <svg><use href="#i-close" /></svg>
+                </button>
+              </label>
+              <div class="head-btns">
+                <button class="icon-btn" id="btn-sort" title="切换排序" aria-label="切换排序">
+                  <svg><use href="#i-sort" /></svg>
+                </button>
+                <button class="icon-btn" id="btn-view" title="切换视图" aria-label="切换视图">
+                  <svg><use href="#i-list" /></svg>
+                </button>
+                <button class="scan-btn" id="btn-scan">
+                  <svg><use href="#i-refresh" /></svg>
+                  <span>重新扫描</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <div class="quickbar" id="quickbar" hidden>
+            <div class="quickbar-label">
+              <svg><use href="#i-zap" /></svg>
+              <span>常用</span>
+            </div>
+            <div class="quickbar-items" id="quickbar-items"></div>
+            <div class="quickbar-hint">Alt + 数字快速启动</div>
+          </div>
+
+          <div class="scan-progress" id="scan-progress" hidden>
+            <div class="scan-progress-track"><span id="scan-progress-bar"></span></div>
+            <span class="scan-progress-text" id="scan-progress-text">正在扫描…</span>
+          </div>
+
+          <div class="content" id="content" tabindex="-1">
+            <div class="skeleton" id="skeleton">
+              <div class="skeleton-quick"></div>
+              <div class="skeleton-grid">
+                <div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div>
+                <div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div>
+                <div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div><div class="skeleton-tile"></div>
+              </div>
+            </div>
+            <div id="content-body" hidden></div>
+          </div>
+
+          <footer class="statusbar">
+            <div class="status-left">
+              <span class="status-chip"><svg><use href="#i-hard-drive" /></svg><span id="status-count">0 个应用</span></span>
+              <span class="status-chip"><svg><use href="#i-power" /></svg><span>空闲零轮询</span></span>
+            </div>
+            <div class="status-right">
+              <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+              <span><kbd>Enter</kbd> 启动</span>
+              <span><kbd>右键</kbd> 更多</span>
+            </div>
+          </footer>
+        </main>
+
+        <aside class="inspector" id="inspector" hidden aria-label="应用详情"></aside>
+      </div>
+
+      <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+      <div class="modal-layer" id="modal-layer" hidden></div>
+      <div class="menu-layer" id="menu-layer" hidden></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

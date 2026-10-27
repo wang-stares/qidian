@@ -1,0 +1,28 @@
+{
+  "name": "qidian",
+  "private": true,
+  "version": "0.23.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "prebuild": "node scripts/check-version.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/check-version.mjs",
+    "version:bump": "node scripts/bump-version.mjs",
+    "release:notes": "node scripts/release-notes.mjs",
+    "promo": "node scripts/promo.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "sharp": "^0.34.4",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.4.0"
+  },
+  "description": "启点 - 轻量 Windows 应用分类启动台"
+}

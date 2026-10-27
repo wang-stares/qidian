@@ -1,0 +1,23 @@
+{
+  "moduleId": "optimize",
+  "moduleName": "系统优化",
+  "moduleVersion": "1.5.0",
+  "minAppVersion": "0.19.0",
+  "features": [
+    "one-click-tune",
+    "registry-backup",
+    "undo",
+    "category-filter",
+    "temp-clean",
+    "update-cache-clean",
+    "prefetch-clean",
+    "recycle-bin-clean",
+    "power-plan",
+    "ultimate-performance",
+    "dns-switch",
+    "dns-restore",
+    "network-diagnose",
+    "flush-dns",
+    "deep-memory-clean"
+  ]
+}
