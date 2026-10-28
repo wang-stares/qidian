@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 9;
+pub const CACHE_SCHEMA: u32 = 10;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -56,8 +56,12 @@ fn scan_windows(
         let uwp_handle = scan_uwp.then(|| {
             scope.spawn(move || {
                 // 优先直接枚举 shell:AppsFolder（开始菜单 / 任务栏搜索的数据源），
-                // 不依赖 PowerShell；失败时再退回 Get-StartApps。
+                // 不依赖 PowerShell；Shell 不可用时依次退回 WinRT PackageManager
+                // 与 Get-StartApps，三条路径互相独立，避免单点失败导致整批漏扫。
                 let mut apps = collect_apps_folder(include_system);
+                if apps.is_empty() {
+                    apps = collect_packaged_apps(include_system);
+                }
                 if apps.is_empty() {
                     apps = collect_uwp(include_system);
                 }
@@ -1347,15 +1351,47 @@ fn collect_uwp(include_system: bool) -> Vec<(String, String)> {
     if empty(&stdout) {
         stdout = crate::powershell::run_encoded_with_timeout(script, 25);
     }
-    let Some(stdout) = stdout else {
-        return Vec::new();
-    };
+    stdout
+        .as_deref()
+        .map(|bytes| parse_app_list(bytes, include_system))
+        .unwrap_or_default()
+}
+
+/// 用 WinRT `PackageManager` 直接读取 MSIX 清单里的应用入口。
+/// 这条路径不经过 Shell / AppsFolder，可作为 Shell COM 被安全软件拦截时的
+/// 独立数据源（Flow Launcher 的 UWP 索引同样使用 PackageManager）。
+#[cfg(windows)]
+fn collect_packaged_apps(include_system: bool) -> Vec<(String, String)> {
+    let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+        $ProgressPreference='SilentlyContinue'; $ErrorActionPreference='SilentlyContinue'; \
+        $pm=[Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]::new(); \
+        $list=@(); \
+        foreach($package in $pm.FindPackagesForUser('')){ \
+          try{ \
+            foreach($entry in $package.GetAppListEntries()){ \
+              $list += [pscustomobject]@{ \
+                Name=$entry.DisplayInfo.DisplayName; \
+                AppID=$entry.AppUserModelId \
+              } \
+            } \
+          }catch{} \
+        }; \
+        @($list) | ConvertTo-Json -Compress";
+    crate::powershell::run_encoded_with_timeout(script, 30)
+        .as_deref()
+        .map(|bytes| parse_app_list(bytes, include_system))
+        .unwrap_or_default()
+}
+
+/// 解析 PowerShell 输出的 `{ Name, AppID }` 列表。
+#[cfg(windows)]
+fn parse_app_list(bytes: &[u8], include_system: bool) -> Vec<(String, String)> {
     let value: serde_json::Value =
-        serde_json::from_slice(&stdout).unwrap_or(serde_json::Value::Null);
-    let objects = match &value {
-        serde_json::Value::Array(items) => items.clone(),
-        serde_json::Value::Object(_) => vec![value.clone()],
-        _ => Vec::new(),
+        serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null);
+    let objects: &[serde_json::Value] = match &value {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Object(_) => std::slice::from_ref(&value),
+        _ => &[],
     };
 
     let mut result = Vec::new();
@@ -1369,6 +1405,10 @@ fn collect_uwp(include_system: bool) -> Vec<(String, String)> {
         let name = name.trim();
         let aumid = aumid.trim();
         if name.is_empty() || aumid.is_empty() || is_junk_name(name) {
+            continue;
+        }
+        // 资源字符串（ms-resource:）在个别系统上没有被 WinRT 解析，跳过。
+        if name.to_lowercase().starts_with("ms-resource:") {
             continue;
         }
         // 系统内置 UWP 只在勾选「显示系统应用」时保留；桌面条目不受此过滤。

@@ -3,6 +3,17 @@
 版本号遵循语义化版本（SemVer），更新公告格式参考 Keep a Changelog。
 每次发布前必须在本文件补充当前版本的条目；`npm run build` 会校验版本号与公告是否一致。
 
+## [1.4.3] - 2026-10-28
+
+### 新增
+
+- **开始菜单读取增加第三条独立通道（参考 Flow Launcher 的 PackageManager 索引）**：AppsFolder 的 Shell COM 被安全软件拦截或资源管理器异常时，改用 WinRT `PackageManager` 直接读取 MSIX 清单里的应用入口（`Package.GetAppListEntries`），再退回 `Get-StartApps`；三条路径互不依赖，避免单点失败导致 Store / MSIX 应用整批漏扫。
+- 过滤 WinRT 未解析的 `ms-resource:` 资源名，避免把原始资源键当成应用名展示。
+
+### 变更
+
+- 扫描缓存版本 9 → 10，升级后自动重扫一次。
+
 ## [1.4.2] - 2026-10-28
 
 ### 修复
