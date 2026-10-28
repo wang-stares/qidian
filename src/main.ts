@@ -92,13 +92,12 @@ import {
 } from "./processInfo";
 
 const SETTINGS_TABS = [
-  { id: "theme", label: "主题", glyph: "palette" },
-  { id: "appearance", label: "外观", glyph: "monitor" },
+  { id: "appearance", label: "外观", glyph: "palette" },
+  { id: "wallpaper", label: "壁纸", glyph: "monitor" },
   { id: "categories", label: "分类", glyph: "layers" },
-  { id: "scan", label: "扫描", glyph: "refresh" },
+  { id: "apps", label: "应用", glyph: "grid" },
   { id: "boot", label: "启动", glyph: "power" },
   { id: "plugins", label: "插件", glyph: "box" },
-  { id: "updates", label: "更新", glyph: "sparkle" },
   { id: "about", label: "关于", glyph: "info" },
 ] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
@@ -341,7 +340,7 @@ const state: UiState = {
   lastResults: [],
   inspectorId: null,
   settingsOpen: false,
-  settingsTab: "theme",
+  settingsTab: "appearance",
   customThemeName: "",
   wallpaperData: "",
   wallpaperThumbs: {},
@@ -2100,14 +2099,16 @@ function backgroundAction(cls: string, label: string): string {
 function pluginsPanel(): string {
   if (!state.modulesLoaded && state.modulesLoading) {
     return `<section class="settings-section">
-      <header class="section-head plugin-section-head"><h3>插件</h3><p>正在读取本机插件状态。</p></header>
+      <h3 class="settings-section-title">插件</h3>
+      <p class="settings-section-desc">正在读取本机插件状态。</p>
     </section>`;
   }
   if (state.modules.length === 0) {
     return `<section class="settings-section">
-      <header class="section-head plugin-section-head"><h3>插件</h3><p>${escapeHtml(
+      <h3 class="settings-section-title">插件</h3>
+      <p class="settings-section-desc">${escapeHtml(
         state.modulesError ?? "暂时读不到插件列表。",
-      )}</p></header>
+      )}</p>
       <button class="ghost-btn" data-settings-action="plugins-refresh">${icon("refresh")}重新读取</button>
     </section>`;
   }
@@ -2151,7 +2152,8 @@ function pluginsPanel(): string {
     .join("");
 
   return `<section class="settings-section">
-    <header class="section-head plugin-section-head"><h3>插件</h3><p>启动应用内置；后台、性能、内存、应用管理安装后出现在主界面顶部标签，启动与托盘在设置 › 启动中配置。卸载后立即停用并释放常驻内存。</p></header>
+    <h3 class="settings-section-title">插件</h3>
+    <p class="settings-section-desc">启动应用内置；后台、性能、内存、应用管理安装后出现在主界面顶部标签，启动与托盘安装后在设置 › 启动中配置。卸载后立即停用并释放常驻内存。</p>
     <div class="plugin-summary">${icon("box")}已安装 ${installed.length}/${state.modules.length} · 插件数据 ${formatMemory(
       totalBytes,
     )}</div>
@@ -2278,7 +2280,7 @@ function syncCloseHint(trayAvailable: boolean): void {
 function prepareTab(tab: SettingsTab): void {
   if (tab === "plugins" && !state.modulesLoaded) void loadModules();
   if (tab === "boot" && moduleReady("boot")) loadBootState();
-  if (tab === "theme") void ensureWallpaperThumbs();
+  if (tab === "wallpaper") void ensureWallpaperThumbs();
 }
 
 function bootSettings(): string {
@@ -2286,31 +2288,19 @@ function bootSettings(): string {
   const meta = moduleStatus("boot");
   if (!meta) {
     return `<section class="settings-section">
-      <header class="section-head plugin-section-head"><h3>启动与托盘</h3><p>正在读取插件状态…</p></header>
+      <h3 class="settings-section-title">启动与托盘</h3>
+      <p class="settings-section-desc">正在读取插件状态…</p>
     </section>`;
   }
-  const busy = state.moduleBusy === "boot";
   return `<section class="settings-section">
-    <header class="section-head plugin-section-head"><h3>启动与托盘</h3><p>这是一个可选插件，安装后才能设置托盘、快捷键与开机自启动。</p></header>
-    <div class="plugin-card">
-      <div class="plugin-head">
-        <span class="plugin-icon">${icon("power")}</span>
-        <div class="plugin-copy">
-          <div class="plugin-title">${escapeHtml(meta.name)}<span class="plugin-version">v${escapeHtml(
-            meta.version,
-          )}</span></div>
-          <p class="plugin-desc">${escapeHtml(meta.description)}</p>
-        </div>
-        <span class="plugin-state">未安装</span>
-      </div>
-      <div class="plugin-chips">${meta.features
-        .map((feature) => `<span class="plugin-chip">${escapeHtml(feature)}</span>`)
-        .join("")}</div>
-      <div class="plugin-foot">
-        <span class="plugin-size">安装后才生效</span>
-        <button class="primary-btn" data-settings-action="module-install" data-value="boot"${
-          busy ? " disabled" : ""
-        }>${busy ? "安装中…" : "安装插件"}</button>
+    <h3 class="settings-section-title">启动与托盘</h3>
+    <p class="settings-section-desc">开机自启动、托盘菜单与全局快捷键属于可选插件，安装统一在「插件」页管理。</p>
+    <div class="settings-card">
+      <div class="setting-row">
+        <div class="setting-copy"><div class="setting-title">${escapeHtml(
+          meta.name,
+        )} · 未安装</div><div class="setting-desc">安装后，这里会出现开机自启、托盘行为、全局快捷键与应用快捷键设置。</div></div>
+        <div class="setting-control"><button class="primary-btn" data-settings-action="tab" data-value="plugins">前往插件安装</button></div>
       </div>
     </div>
   </section>`;
@@ -2332,7 +2322,7 @@ function settingsHtml(): string {
     <div class="modal-head">
       <div>
         <h2 class="modal-title">设置</h2>
-        <p class="modal-sub">主题、外观、分类、扫描、启动、插件与版本更新 · 已安装插件的入口在主界面顶部标签</p>
+        <p class="modal-sub">外观、壁纸、分类、应用索引、启动、插件与关于 · 已安装插件的入口在主界面顶部标签</p>
       </div>
       <button class="modal-close" data-settings-action="close" data-close-settings aria-label="关闭设置">${icon(
         "close",
@@ -2340,16 +2330,16 @@ function settingsHtml(): string {
     </div>
     <div class="tabs" role="tablist">${tabButtons}</div>
     <div class="modal-body">
-      <div class="tab-panel" data-panel="theme"${state.settingsTab === "theme" ? "" : " hidden"}>
-        ${themePanel()}
-      </div>
       <div class="tab-panel" data-panel="appearance"${state.settingsTab === "appearance" ? "" : " hidden"}>
         ${appearancePanel()}
+      </div>
+      <div class="tab-panel" data-panel="wallpaper"${state.settingsTab === "wallpaper" ? "" : " hidden"}>
+        ${wallpaperPanel()}
       </div>
       <div class="tab-panel" data-panel="categories"${state.settingsTab === "categories" ? "" : " hidden"}>
         ${categoriesPanel()}
       </div>
-      <div class="tab-panel" data-panel="scan"${state.settingsTab === "scan" ? "" : " hidden"}>
+      <div class="tab-panel" data-panel="apps"${state.settingsTab === "apps" ? "" : " hidden"}>
         ${scanPanel()}
       </div>
       <div class="tab-panel" data-panel="boot"${state.settingsTab === "boot" ? "" : " hidden"}>
@@ -2358,16 +2348,13 @@ function settingsHtml(): string {
       <div class="tab-panel" data-panel="plugins"${state.settingsTab === "plugins" ? "" : " hidden"}>
         ${pluginsPanel()}
       </div>
-      <div class="tab-panel" data-panel="updates"${state.settingsTab === "updates" ? "" : " hidden"}>
-        ${updatesPanel()}
-      </div>
       <div class="tab-panel" data-panel="about"${state.settingsTab === "about" ? "" : " hidden"}>
         ${aboutPanel()}
       </div>
     </div>
     <div class="modal-foot">
       <div class="modal-foot-left">${icon("shield")}<span>数据仅保存在本机 · 无联网 · 无遥测</span></div>
-      <div class="modal-foot-right"><button data-settings-action="open-data">打开数据目录</button><span>v${APP_VERSION}</span></div>
+      <div class="modal-foot-right"><span>v${APP_VERSION}</span></div>
     </div>
   </div>`;
 }
@@ -2540,11 +2527,11 @@ function palettePanel(): string {
   const palette = state.settings.customPalette;
   const active = state.settings.theme === "custom";
   return `<div class="settings-section">
-      <h3 class="settings-section-title">自定义主题</h3>
+      <h3 class="settings-section-title">自定义配色与形状</h3>
       <p class="settings-section-desc">${
         active
           ? "当前使用「自定义」风格，下面的颜色与形状会实时生效。"
-          : "修改任意一项会自动切换到「自定义」风格；浅色与深色分别设置，互不影响。"
+          : "仅在选择「自定义」风格时生效；修改任意一项会自动切换过去，浅色与深色分别设置。"
       }</p>
       <div class="settings-card">
         <div class="palette-grid">
@@ -2624,8 +2611,6 @@ function themePanel(): string {
       <p class="settings-section-desc">主题决定窗口背景氛围，并同步推荐强调色；应用后仍可在下方单独调整。</p>
       <div class="preset-options">${THEME_PRESETS.map(themePresetOption).join("")}</div>
     </div>
-    ${palettePanel()}
-    ${wallpaperPanel()}
     <div class="settings-section">
       <h3 class="settings-section-title">明暗与强调色</h3>
       <div class="settings-card">
@@ -2655,10 +2640,14 @@ function themePanel(): string {
         </div>
       </div>
     </div>
-    ${customThemesPanel()}`;
+    ${palettePanel()}`;
 }
 
 function appearancePanel(): string {
+  return `${themePanel()}${displayPanel()}${customThemesPanel()}`;
+}
+
+function displayPanel(): string {
   const densities: { id: Density; label: string }[] = [
     { id: "cozy", label: "舒适" },
     { id: "compact", label: "紧凑" },
@@ -2674,7 +2663,8 @@ function appearancePanel(): string {
     { id: "strong", label: "加强" },
   ];
   return `<div class="settings-section">
-      <h3 class="settings-section-title">显示</h3>
+      <h3 class="settings-section-title">显示细节</h3>
+      <p class="settings-section-desc">控制密度、圆角、模糊与能耗；「自定义」风格下，圆角与模糊由上方自定义配色接管。</p>
       <div class="settings-card">
         <div class="setting-row">
           <div class="setting-copy"><div class="setting-title">信息密度</div><div class="setting-desc">紧凑模式会缩小图标与间距，单屏显示更多应用。</div></div>
@@ -2710,15 +2700,7 @@ function appearancePanel(): string {
           }" data-settings-action="toggle" data-key="lowPower" data-focus-key="toggle-lowPower" aria-label="低功耗模式"></button></div>
         </div>
       </div>
-    </div>
-    <div class="settings-section">
-      <h3 class="settings-section-title">性能说明</h3>
-      <div class="settings-card">
-        <div class="setting-row">
-          <div class="setting-copy"><div class="setting-title">按需加载</div><div class="setting-desc">图标仅在滚动到可视区域时提取并缓存；窗口隐藏时不会执行后台刷新。</div></div>
-          <div class="setting-control"><span class="inspector-tag is-accent">${icon("zap")}轻量</span></div>
-        </div>
-      </div>
+      <p class="settings-section-desc" style="margin-top:10px;padding-left:4px">图标按需提取并缓存，窗口隐藏时不会后台刷新；空闲时不运行任何轮询任务。</p>
     </div>`;
 }
 
@@ -2840,16 +2822,8 @@ function scanPanel(): string {
       : "";
 
   return `<div class="settings-section">
-      <h3 class="settings-section-title">扫描来源</h3>
-      <p class="settings-section-desc">共 ${state.apps.length} 个应用。开始菜单索引与任务栏搜索同源（shell:AppsFolder）；若某个应用缺失，请先在 Windows 开始菜单确认它是否可见，再回到这里重新扫描。</p>
-      <div class="settings-card">
-        <div class="scan-source-list">${
-          sourceRows || `<div class="scan-source-row"><span>尚未扫描</span><span>0</span></div>`
-        }</div>
-      </div>
-    </div>
-    <div class="settings-section">
       <h3 class="settings-section-title">扫描范围</h3>
+      <p class="settings-section-desc">决定收录哪些来源；切换开关后会自动重新扫描。</p>
       <div class="settings-card">
         <div class="setting-row">
           <div class="setting-copy"><div class="setting-title">Microsoft Store 应用</div><div class="setting-desc">读取已注册的 UWP / Microsoft Store 应用。关闭后会跳过该来源。</div></div>
@@ -2886,20 +2860,25 @@ function scanPanel(): string {
             state.scanning ? "disabled" : ""
           }>${icon("refresh")}立即扫描</button></div>
         </div>
-        <div class="setting-row">
-          <div class="setting-copy"><div class="setting-title">图标与扫描缓存</div><div class="setting-desc">删除本地图标缓存，下次显示时按需重新提取；不会删除应用分类与偏好。</div></div>
-          <div class="setting-control"><button class="ghost-btn" data-settings-action="clear-cache">清除缓存</button></div>
-        </div>
       </div>
       <p class="setting-desc" style="margin-top:8px;padding-left:4px">扫描读取开始菜单快捷方式、卸载注册表键值与 Store 应用清单；开启补充扫描时还会读取 Program Files 下 exe 的版本资源。不读取文件内容，也不发起网络请求。</p>
     </div>
+    <div class="settings-section">
+      <h3 class="settings-section-title">扫描来源</h3>
+      <p class="settings-section-desc">共 ${state.apps.length} 个应用。开始菜单索引与任务栏搜索同源（shell:AppsFolder）；若某个应用缺失，请先在 Windows 开始菜单确认它是否可见，再回到这里重新扫描。</p>
+      <div class="settings-card">
+        <div class="scan-source-list">${
+          sourceRows || `<div class="scan-source-row"><span>尚未扫描</span><span>0</span></div>`
+        }</div>
+      </div>
+    </div>
     ${hiddenHtml}
     <div class="settings-section">
-      <h3 class="settings-section-title">重置</h3>
+      <h3 class="settings-section-title">本地缓存</h3>
       <div class="settings-card">
         <div class="setting-row">
-          <div class="setting-copy"><div class="setting-title">恢复默认设置</div><div class="setting-desc">重置外观、分类、固定与启动记录；不会卸载任何应用。</div></div>
-          <div class="setting-control"><button class="ghost-btn" data-settings-action="reset-settings">恢复默认</button></div>
+          <div class="setting-copy"><div class="setting-title">图标与扫描缓存</div><div class="setting-desc">删除本地图标缓存，下次显示时按需重新提取；不会删除应用分类与偏好。</div></div>
+          <div class="setting-control"><button class="ghost-btn" data-settings-action="clear-cache">清除缓存</button></div>
         </div>
       </div>
     </div>`;
@@ -6840,7 +6819,6 @@ function updatesPanel(): string {
       <div class="settings-card">
         <div class="setting-row">
           <div class="setting-copy"><div class="setting-title">覆盖安装</div><div class="setting-desc">运行新版本安装程序即可，安装器会自动关闭正在运行的启点。便携版直接替换 QiDian.exe。应用数据保存在本机，卸载时默认保留。</div></div>
-          <div class="setting-control"><button class="ghost-btn" data-settings-action="open-data">数据目录</button></div>
         </div>
       </div>
     </div>`;
@@ -6859,9 +6837,6 @@ function aboutPanel(): string {
         <span class="about-point">${icon("cpu")}零后台轮询</span>
         <span class="about-point">${icon("shield")}无遥测</span>
       </div>
-      <div class="about-links">
-        <button class="control-link" data-settings-action="tab" data-value="updates">查看版本与更新公告 →</button>
-      </div>
       <div class="shortcut-table">
         <div class="kbd-group"><kbd>Ctrl</kbd><kbd>K</kbd></div><span>聚焦搜索</span>
         <div class="kbd-group"><kbd>↑</kbd><kbd>↓</kbd></div><span>在搜索结果中选择</span>
@@ -6874,6 +6849,20 @@ function aboutPanel(): string {
     </div>
     <div class="setting-row" style="margin-top:12px;padding:12px 4px 0;border-top:1px solid var(--divider)">
       <div class="setting-copy"><div class="setting-title">技术栈</div><div class="setting-desc">Tauri 2 · Rust · Windows WebView2 · 无前端框架 · 无后台服务</div></div>
+    </div>
+    ${updatesPanel()}
+    <div class="settings-section">
+      <h3 class="settings-section-title">重置与数据</h3>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">数据目录</div><div class="setting-desc">设置、分类、图标缓存与壁纸都保存在本机；卸载时默认保留。</div></div>
+          <div class="setting-control"><button class="ghost-btn" data-settings-action="open-data">打开目录</button></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">恢复默认设置</div><div class="setting-desc">重置外观、分类、固定与启动记录；不会卸载任何应用。</div></div>
+          <div class="setting-control"><button class="ghost-btn" data-settings-action="reset-settings">恢复默认</button></div>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -8441,7 +8430,7 @@ els.app.addEventListener("click", (event) => {
     else if (action === "clear-search") clearSearch();
     else if (action === "all") setNav("all");
     else if (action === "settings") openSettings();
-    else if (action === "settings-scan") openSettings("scan");
+    else if (action === "settings-scan") openSettings("apps");
     else if (action === "settings-categories") openSettings("categories");
     return;
   }

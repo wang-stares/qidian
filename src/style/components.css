@@ -980,8 +980,8 @@
 .modal {
   display: flex;
   flex-direction: column;
-  width: min(780px, 100%);
-  max-height: min(660px, calc(100vh - 56px));
+  width: min(840px, 100%);
+  max-height: min(720px, calc(100vh - 56px));
   overflow: hidden;
   border: 1px solid var(--stroke);
   border-radius: var(--dialog-radius);
@@ -1141,10 +1141,11 @@
 
 .settings-section-title {
   margin: 0 0 8px;
-  color: var(--text-3);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  padding-left: 2px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
 
 [data-theme="miuix"] .settings-section-title {
