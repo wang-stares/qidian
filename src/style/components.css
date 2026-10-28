@@ -6626,10 +6626,11 @@ mark {
   align-items: center;
 }
 
+/* 标题在内容区居中：左侧让出通顶侧栏的宽度 */
 [data-theme="macos"] .titlebar-drag {
   justify-content: center;
-  padding-left: 96px;
-  padding-right: 8px;
+  padding-left: var(--mac-rail-w);
+  padding-right: 56px;
 }
 
 [data-theme="macos"] .brand,
@@ -6666,11 +6667,12 @@ mark {
 [data-theme="macos"] .window-controls {
   position: absolute;
   top: 50%;
-  left: 14px;
+  left: 20px;
   height: 14px;
   gap: 8px;
   align-items: center;
   transform: translateY(-50%);
+  z-index: 2;
 }
 
 [data-theme="macos"] .wc-btn {
@@ -6717,57 +6719,95 @@ mark {
   opacity: 1;
 }
 
-/* Finder 侧栏：整块通透、选中项用强调色填充 */
+/* Finder 侧栏：通顶（交通灯浮在侧栏上），选中项是灰色填充而非实心强调色 */
 [data-theme="macos"] .rail {
+  position: absolute;
+  top: calc(-1 * var(--titlebar-h));
+  bottom: 0;
+  left: 0;
+  z-index: 21;
+  width: var(--mac-rail-w);
   margin: 0;
-  padding: 10px 10px 12px;
+  padding: calc(var(--titlebar-h) + 8px) 10px 12px;
   border: 0;
   border-right: 1px solid var(--stroke);
   border-radius: 0;
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  background: var(--mac-rail-bg);
+  backdrop-filter: blur(var(--panel-blur)) saturate(180%);
+}
+
+/* 内容区自成一层不透明材质，壁纸只在侧栏 / 工具栏里透出 */
+[data-theme="macos"] .main {
+  margin-left: var(--mac-rail-w);
+  background: var(--mac-content-bg);
 }
 
 [data-theme="macos"] .rail-label {
-  font-size: 10.5px;
+  margin: 10px 8px 4px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 [data-theme="macos"] .rail-item,
 [data-theme="macos"] .rail-settings {
-  gap: 9px;
-  padding: 0 9px;
+  gap: 8px;
+  padding: 0 8px;
   border-radius: 6px;
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 400;
+}
+
+/* Finder 侧栏：符号常驻强调色，选中是灰色填充 */
+[data-theme="macos"] .rail-icon {
+  color: color-mix(in srgb, var(--accent) 86%, var(--text-3));
 }
 
 [data-theme="macos"] .rail-item.is-active,
 [data-theme="macos"] .rail-settings.is-active {
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-weight: 500;
+  background: var(--mac-select-bg);
+  color: var(--text);
+  font-weight: 600;
 }
 
 [data-theme="macos"] .rail-item.is-active .rail-icon,
 [data-theme="macos"] .rail-item.is-active .rail-count,
 [data-theme="macos"] .rail-settings.is-active .rail-icon {
-  color: inherit;
+  color: var(--accent);
 }
 
 [data-theme="macos"] .rail-item.is-active .rail-count {
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
-/* macOS 工具栏搜索框 */
+[data-theme="macos"] .rail-count {
+  font-size: 10px;
+}
+
+[data-theme="macos"] .rail-kbd {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+}
+
+/* macOS 工具栏搜索框：NSSearchField 式灰色填充，无描边 */
 [data-theme="macos"] .search {
-  border-radius: 7px;
-  background: var(--surface-2);
-  box-shadow: inset 0 0 0 1px var(--stroke);
+  border: 0;
+  border-radius: var(--search-radius);
+  background: var(--mac-fill);
+  box-shadow: none;
 }
 
 [data-theme="macos"] .search:focus-within {
-  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--surface-solid);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent),
+    inset 0 0 0 1px var(--accent-line);
+}
+
+[data-theme="macos"] .search-kbd {
+  border: 0;
+  background: transparent;
 }
 
 /* 主按钮：macOS 推按钮的轻微立体感 */
@@ -7103,19 +7143,23 @@ mark {
   border-radius: 1px;
 }
 
-/* ══ macOS 原生细节：毛玻璃、交通灯描边、浮层材质 ═══════════════ */
+/* ══ macOS 原生细节：统一工具栏、材质分层、交通灯描边 ═══════════ */
 
-/* 工具栏：统一标题栏的半透明材质，让壁纸在背后透出 */
+/* 工具栏：左侧是侧栏的毛玻璃，右侧与内容区共用同一块不透明材质。
+   ::before 只覆盖侧栏右侧，避免整条标题栏把侧栏顶部「盖白」。 */
 [data-theme="macos"] .titlebar {
-  background: color-mix(in srgb, var(--panel) 42%, transparent);
-  backdrop-filter: blur(30px) saturate(180%);
-  border-bottom: 1px solid var(--stroke);
+  background: transparent;
+  border-bottom: 0;
+  backdrop-filter: none;
 }
 
-/* 侧栏：Finder 式更明显的 vibrancy */
-[data-theme="macos"] .rail {
-  background: color-mix(in srgb, var(--panel) 58%, transparent);
-  backdrop-filter: blur(36px) saturate(180%);
+[data-theme="macos"] .titlebar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 0 var(--mac-rail-w);
+  border-bottom: 1px solid var(--stroke);
+  background: var(--mac-content-bg);
 }
 
 /* 交通灯加一圈内描边，接近 macOS 的真实质感 */
@@ -7129,74 +7173,95 @@ mark {
     0 0 0 0.5px rgba(0, 0, 0, 0.06);
 }
 
-/* 快速启动栏：毛玻璃胶囊 */
+/* 快速启动栏：内容区里的工具条，用浅填充而不是毛玻璃。
+   内容区已不透明，叠多层 backdrop-filter 只会让文字发虚、还白烧 GPU。 */
 [data-theme="macos"] .quickbar {
-  background: color-mix(in srgb, var(--panel) 62%, transparent);
-  border-color: color-mix(in srgb, #ffffff 38%, transparent);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.04),
-    0 10px 30px rgba(0, 0, 0, 0.06);
-  backdrop-filter: blur(26px) saturate(170%);
+  background: var(--mac-fill);
+  border: 0;
+  border-radius: var(--quickbar-radius);
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
-/* 详情面板：Inspector 材质 */
+[data-theme="macos"] .quickbar .quick-item:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+/* 详情面板：Inspector 是浮在内容区上的面板，用实色 + 投影 */
 [data-theme="macos"] .inspector {
-  background: color-mix(in srgb, var(--panel-strong) 78%, transparent);
-  border-color: color-mix(in srgb, #ffffff 32%, transparent);
-  backdrop-filter: blur(38px) saturate(180%);
+  background: var(--surface-solid);
+  border-color: var(--stroke);
+  border-radius: 10px;
+  backdrop-filter: none;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.05),
+    0 12px 32px rgba(0, 0, 0, 0.08);
 }
 
-/* 右键菜单：更通透的浮层 */
+[data-mode="dark"][data-theme="macos"] .inspector {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 12px 32px rgba(0, 0, 0, 0.36);
+}
+
+/* 右键菜单：macOS 菜单是不透明浮层 + 大圆角细投影 */
 [data-theme="macos"] .context-menu {
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--flyout-bg) 80%, transparent);
-  backdrop-filter: blur(34px) saturate(180%);
+  border-radius: 8px;
+  background: var(--surface-solid);
+  backdrop-filter: none;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.3) inset,
+    0 10px 30px rgba(0, 0, 0, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+[data-mode="dark"][data-theme="macos"] .context-menu {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 12px 34px rgba(0, 0, 0, 0.62),
+    0 2px 6px rgba(0, 0, 0, 0.36);
 }
 
 [data-theme="macos"] .menu-item {
   border-radius: 5px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
-/* Toast：macOS 通知条材质 */
+/* Toast：通知条实色，避免和内容区叠加二次模糊 */
 [data-theme="macos"] .toast {
   border-radius: 10px;
-  background: color-mix(in srgb, var(--toast-bg) 88%, transparent);
-  backdrop-filter: blur(24px) saturate(160%);
+  background: var(--toast-bg);
+  backdrop-filter: none;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.16),
+    0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-/* 设置面板：macOS sheet 材质，遮罩层做背景模糊 */
+/* 设置面板：遮罩只做轻微压暗（macOS sheet 不虚化整个窗口），
+   面板自身不透明，避免「模态层 + 面板」两层 blur 叠加后发灰。 */
 [data-theme="macos"] .modal-layer {
   background: rgba(10, 12, 16, 0.2);
-  backdrop-filter: blur(16px) saturate(120%);
+  backdrop-filter: none;
 }
 
 [data-theme="macos"] .modal {
-  border: 1px solid color-mix(in srgb, #ffffff 30%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
-  backdrop-filter: blur(42px) saturate(180%);
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: var(--surface-solid);
+  backdrop-filter: none;
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.28) inset,
-    0 36px 90px rgba(0, 0, 0, 0.32),
-    0 2px 10px rgba(0, 0, 0, 0.08);
+    0 1px 0 rgba(255, 255, 255, 0.3) inset,
+    0 30px 80px rgba(0, 0, 0, 0.28),
+    0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 [data-mode="dark"][data-theme="macos"] .modal {
-  border-color: color-mix(in srgb, #ffffff 12%, transparent);
-  background: color-mix(in srgb, var(--panel-strong) 84%, transparent);
+  border-color: var(--stroke);
+  background: var(--surface-solid);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 40px 100px rgba(0, 0, 0, 0.66),
-    0 2px 10px rgba(0, 0, 0, 0.32);
-}
-
-/* 搜索框：内嵌高光，接近 NSSearchField */
-[data-theme="macos"] .search {
-  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
-  box-shadow:
-    inset 0 0 0 1px var(--stroke),
-    inset 0 1px 2px rgba(0, 0, 0, 0.04);
+    0 36px 92px rgba(0, 0, 0, 0.62),
+    0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 /* 焦点环：macOS 的柔和蓝色外环 */
@@ -7229,6 +7294,156 @@ mark {
 [data-theme="macos"] .inspector-body::-webkit-scrollbar-thumb {
   border: 1px solid transparent;
   background-clip: content-box;
+}
+
+/* 分段控件：NSSegmentedControl —— 灰色轨道 + 白色选中滑块 */
+[data-theme="macos"] .surface-tabs {
+  gap: 1px;
+  padding: 2px;
+  border: 0;
+  border-radius: calc(var(--control-radius) + 2px);
+  background: var(--mac-fill);
+}
+
+[data-theme="macos"] .surface-tab {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--control-radius);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+[data-theme="macos"] .surface-tab:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+[data-theme="macos"] .surface-tab.is-active {
+  background: var(--mac-segment-bg);
+  color: var(--text);
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.14);
+}
+
+[data-mode="dark"][data-theme="macos"] .surface-tab.is-active {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.45);
+}
+
+/* 筛选 chip 同款：轨道内浅填充，选中项是白色滑块 */
+[data-theme="macos"] .chips {
+  gap: 2px;
+  padding: 2px;
+  border-radius: calc(var(--control-radius) + 2px);
+  background: var(--mac-fill);
+}
+
+[data-theme="macos"] .chip {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: var(--mac-fill);
+  color: var(--text-2);
+}
+
+[data-theme="macos"] .chips .chip {
+  background: transparent;
+}
+
+[data-theme="macos"] .chip:hover {
+  color: var(--text);
+}
+
+[data-theme="macos"] .chip.is-active {
+  background: var(--mac-segment-bg);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.14);
+}
+
+[data-mode="dark"][data-theme="macos"] .chip.is-active {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.45);
+}
+
+/* 设置面板顶部的分页也改成 NSSegmentedControl：macOS 系统设置就是这种分段工具栏 */
+[data-theme="macos"] .tabs {
+  gap: 1px;
+  margin: 0 24px;
+  padding: 2px;
+  border-bottom: 0;
+  border-radius: calc(var(--control-radius) + 2px);
+  background: var(--mac-fill);
+}
+
+[data-theme="macos"] .tab {
+  flex: 1;
+  justify-content: center;
+  height: 27px;
+  border-radius: var(--control-radius);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+[data-theme="macos"] .tab svg {
+  width: 13px;
+  height: 13px;
+}
+
+[data-theme="macos"] .tab.is-active {
+  background: var(--mac-segment-bg);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.14);
+}
+
+[data-mode="dark"][data-theme="macos"] .tab.is-active {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 0.5px 1.5px rgba(0, 0, 0, 0.45);
+}
+
+/* 图标投影：接近 macOS 图标在 Launchpad 里的柔和落影 */
+[data-theme="macos"] .app-icon img {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
+}
+
+[data-mode="dark"][data-theme="macos"] .app-icon img {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+}
+
+/* 大标题：SF Pro Display 的紧凑字距 */
+[data-theme="macos"] .view-title {
+  font-weight: 700;
+  letter-spacing: -0.022em;
+}
+
+/* 状态栏：macOS 应用底部是一条细分割线，不再用带底色的条 */
+[data-theme="macos"] .statusbar {
+  border-top-color: var(--stroke);
+  padding: 7px 2px 9px;
+  font-size: 10px;
+}
+
+/* 窄窗口：Finder 的侧栏会收成图标条，宽度与内容区一起跟上 */
+@media (max-width: 980px) {
+  [data-theme="macos"] {
+    --mac-rail-w: 72px;
+  }
+
+  [data-theme="macos"] .rail {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
 }
 
 /* 低功耗：统一关闭本主题新增的毛玻璃 */

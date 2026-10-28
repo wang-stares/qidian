@@ -311,37 +311,39 @@
   --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace;
 
   --titlebar-h: 52px;
-  --titlebar-pad-left: 16px;
-  --rail-w: 212px;
+  --titlebar-pad-left: 18px;
+  --rail-w: 220px;
   --rail-margin: 0;
   --rail-radius: 0;
-  --rail-item-h: 32px;
+  /* 实际侧栏宽度：窄窗口下收成图标条，内容区与会跟随 */
+  --mac-rail-w: var(--rail-w);
+  --rail-item-h: 30px;
   --rail-item-radius: 6px;
-  --rail-label-size: 10.5px;
-  --rail-label-spacing: 0.05em;
-  --main-pad-x: 30px;
-  --main-pad-top: 20px;
-  --tile-min: 96px;
-  --tile-h: 108px;
-  --icon-size: 42px;
-  --icon-radius: 10px;
-  --tile-radius: 12px;
-  --gap-grid: 6px;
-  --section-gap: 22px;
-  --search-h: 30px;
-  --search-radius: 7px;
+  --rail-label-size: 11px;
+  --rail-label-spacing: 0;
+  --main-pad-x: 32px;
+  --main-pad-top: 22px;
+  --tile-min: 98px;
+  --tile-h: 110px;
+  --icon-size: 44px;
+  --icon-radius: 11px;
+  --tile-radius: 10px;
+  --gap-grid: 8px;
+  --section-gap: 24px;
+  --search-h: 28px;
+  --search-radius: 8px;
   --control-radius: 7px;
   --panel-radius: 12px;
-  --dialog-radius: 14px;
+  --dialog-radius: 12px;
   --settings-card-radius: 10px;
   --inspector-inset: 12px;
   --inspector-w: 310px;
-  --panel-blur: 30px;
+  --panel-blur: 44px;
   --tile-border: transparent;
   --tile-lift: 0px;
   --view-title-size: 26px;
   --view-title-weight: 600;
-  --quickbar-radius: 999px;
+  --quickbar-radius: 9px;
   --button-weight: 500;
   --titlebar-crumb-display: inline-flex;
   --brand-tag-display: none;
@@ -349,6 +351,11 @@
   --tile-bg: transparent;
   --tile-shadow: none;
   --checkbox-radius: 5px;
+}
+
+/* macOS 的「加强」档要明显强于默认，接近系统 vibrancy 的大半径模糊 */
+[data-theme="macos"][data-blur="strong"] {
+  --panel-blur: 68px;
 }
 
 /* ── 极简 Mono ───────────────────────────────────────────────── */
@@ -629,8 +636,14 @@
   --surface-2: rgba(0, 0, 0, 0.028);
   --surface-3: rgba(0, 0, 0, 0.05);
   --tile-surface: transparent;
-  --tile-hover: rgba(255, 255, 255, 0.68);
-  --tile-active: rgba(255, 255, 255, 0.9);
+  --tile-hover: rgba(0, 0, 0, 0.045);
+  --tile-active: rgba(0, 0, 0, 0.075);
+  /* macOS 材质：内容区不透明、侧栏 / 工具栏透出壁纸与系统模糊。 */
+  --mac-content-bg: rgba(246, 246, 248, 0.97);
+  --mac-rail-bg: rgba(242, 242, 247, 0.44);
+  --mac-select-bg: rgba(0, 0, 0, 0.085);
+  --mac-fill: rgba(118, 118, 128, 0.12);
+  --mac-segment-bg: #ffffff;
   --stroke: rgba(0, 0, 0, 0.062);
   --stroke-2: rgba(0, 0, 0, 0.12);
   --divider: rgba(0, 0, 0, 0.078);
@@ -671,8 +684,14 @@
   --surface-2: rgba(255, 255, 255, 0.05);
   --surface-3: rgba(255, 255, 255, 0.08);
   --tile-surface: transparent;
-  --tile-hover: rgba(255, 255, 255, 0.072);
+  --tile-hover: rgba(255, 255, 255, 0.07);
   --tile-active: rgba(255, 255, 255, 0.11);
+  /* macOS 材质：内容区不透明、侧栏 / 工具栏透出壁纸与系统模糊。 */
+  --mac-content-bg: rgba(28, 28, 30, 0.97);
+  --mac-rail-bg: rgba(28, 28, 32, 0.44);
+  --mac-select-bg: rgba(255, 255, 255, 0.13);
+  --mac-fill: rgba(118, 118, 128, 0.24);
+  --mac-segment-bg: rgba(255, 255, 255, 0.22);
   --stroke: rgba(255, 255, 255, 0.075);
   --stroke-2: rgba(255, 255, 255, 0.15);
   --divider: rgba(255, 255, 255, 0.085);
@@ -699,6 +718,73 @@
   --skeleton-a: rgba(255, 255, 255, 0.04);
   --skeleton-b: rgba(255, 255, 255, 0.08);
   --wc-hover: rgba(255, 255, 255, 0.07);
+}
+
+/* macOS 系统色：把强调色映射到 Apple 的 accent 色板，避免「蓝色不像 mac」 */
+[data-theme="macos"][data-accent="blue"] {
+  --accent: #007aff;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="violet"] {
+  --accent: #af52de;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="orange"] {
+  --accent: #ff9500;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="green"] {
+  --accent: #34c759;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="rose"] {
+  --accent: #ff2d55;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="cyan"] {
+  --accent: #32ade6;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="amber"] {
+  --accent: #ff9f0a;
+  --accent-fg: #ffffff;
+}
+[data-theme="macos"][data-accent="slate"] {
+  --accent: #8e8e93;
+  --accent-fg: #ffffff;
+}
+
+[data-mode="dark"][data-theme="macos"][data-accent="blue"] {
+  --accent: #0a84ff;
+  --accent-fg: #ffffff;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="violet"] {
+  --accent: #bf5af2;
+  --accent-fg: #ffffff;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="orange"] {
+  --accent: #ff9f0a;
+  --accent-fg: #241603;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="green"] {
+  --accent: #30d158;
+  --accent-fg: #04200c;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="rose"] {
+  --accent: #ff375f;
+  --accent-fg: #ffffff;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="cyan"] {
+  --accent: #64d2ff;
+  --accent-fg: #04191f;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="amber"] {
+  --accent: #ffd60a;
+  --accent-fg: #241603;
+}
+[data-mode="dark"][data-theme="macos"][data-accent="slate"] {
+  --accent: #98989d;
+  --accent-fg: #0d1117;
 }
 
 /* Mono light */

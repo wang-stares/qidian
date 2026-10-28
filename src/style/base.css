@@ -93,8 +93,11 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   border-radius: 16px;
 }
 
+/* macOS：窗口本体透明，材质交给侧栏（系统模糊）与内容区（不透明），
+   否则半透明大底会把侧栏的模糊整片压平，看起来「糊了但没透」。 */
 .app[data-theme="macos"] {
-  border-radius: 14px;
+  border-radius: 12px;
+  background: transparent;
 }
 
 .app[data-theme="mono"] {
