@@ -107,11 +107,11 @@
 
 ## 宣传片
 
-56 秒功能介绍（README 内为 GIF 预览，可直接播放；完整 1080p 版见下方链接）：
+59 秒功能介绍（README 内为前 20 秒 GIF 预览，可直接播放；完整 1080p 60fps 版见下方链接）：
 
-![启点宣传片](preview/qidian-promo.gif)
+![启点 2.0 宣传片](preview/qidian-promo.gif)
 
-[▶ 下载完整版 1080p 宣传片（MP4，11 MB）](https://github.com/wang-stares/qidian/releases/download/v1.0.0/qidian-promo-1080p.mp4)
+[▶ 下载完整版 1080p60 宣传片（MP4，10 MB）](https://github.com/wang-stares/qidian/releases/download/v2.0.0/QiDian-promo-2.0-1080p60.mp4)
 
 ## 系统要求
 
