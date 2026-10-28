@@ -155,6 +155,8 @@ export interface Settings {
   includeSystemApps: boolean;
   scanInstallDirs: boolean;
   aiPermissions: AiPermissions;
+  /** 语音输入识别语言：auto / zh / en。 */
+  aiSpeechLanguage: "auto" | "zh" | "en";
   autoRefreshHours: number;
   memoryMode: MemoryMode;
   memoryLevel: MemoryLevel;

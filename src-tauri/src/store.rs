@@ -233,6 +233,9 @@ pub fn sanitize_settings(settings: &mut Settings) {
     if !matches!(settings.color_mode.as_str(), "system" | "light" | "dark") {
         settings.color_mode = "system".to_string();
     }
+    if !matches!(settings.ai_speech_language.as_str(), "auto" | "zh" | "en") {
+        settings.ai_speech_language = "zh".to_string();
+    }
     if !matches!(
         settings.accent.as_str(),
         "blue" | "violet" | "orange" | "green" | "rose" | "cyan" | "amber" | "slate" | "custom"

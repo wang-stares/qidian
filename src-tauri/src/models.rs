@@ -344,6 +344,8 @@ pub struct Settings {
     pub scan_install_dirs: bool,
     /// AI 工具权限：大类 + 小类；关闭大类时该组全部失效。
     pub ai_permissions: AiPermissions,
+    /// 语音输入识别语言：auto / zh / en，默认中文，避免短句被误判成英文。
+    pub ai_speech_language: String,
     pub auto_refresh_hours: u32,
     pub memory_mode: String,
     pub memory_level: String,
@@ -403,6 +405,7 @@ impl Default for Settings {
             include_system_apps: false,
             scan_install_dirs: false,
             ai_permissions: AiPermissions::default(),
+            ai_speech_language: "zh".to_string(),
             auto_refresh_hours: 12,
             memory_mode: "auto".to_string(),
             memory_level: "normal".to_string(),

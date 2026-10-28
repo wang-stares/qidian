@@ -424,7 +424,7 @@ const mockBridge = {
     };
   },
 
-  async aiTranscribe(): Promise<string> {
+  async aiTranscribe(_wav: string, _language?: string): Promise<string> {
     await sleep(300);
     return "打开微信";
   },
@@ -862,8 +862,8 @@ const tauriBridge = {
     return tauriInvoke<Record<string, unknown>>("ai_chat", { messages, tools });
   },
 
-  aiTranscribe(wav: string): Promise<string> {
-    return tauriInvoke<string>("ai_transcribe", { wav });
+  aiTranscribe(wav: string, language: string): Promise<string> {
+    return tauriInvoke<string>("ai_transcribe", { wav, language });
   },
 
   aiClassify(

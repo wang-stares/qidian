@@ -130,8 +130,12 @@ fn ai_chat(
 }
 
 #[tauri::command]
-fn ai_transcribe(state: State<'_, AppState>, wav: String) -> Result<String, String> {
-    ai::transcribe(&state.paths, &wav)
+fn ai_transcribe(
+    state: State<'_, AppState>,
+    wav: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    ai::transcribe(&state.paths, &wav, language.as_deref().unwrap_or("zh"))
 }
 
 /// 让本地模型把应用归到已有分类；前端按批次调用，避免超出模型上下文。

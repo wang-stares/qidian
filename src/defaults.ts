@@ -156,6 +156,7 @@ export const DEFAULT_SETTINGS: Settings = {
     systemInfo: true,
     systemAction: true,
   },
+  aiSpeechLanguage: "zh",
   autoRefreshHours: 12,
   memoryMode: "auto",
   memoryLevel: "normal",

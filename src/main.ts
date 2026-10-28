@@ -2242,8 +2242,33 @@ function pluginsPanel(): string {
       totalBytes,
     )}</div>
     <div class="plugin-list">${cards}</div>
+    ${state.aiEnabled || state.aiInstalled ? aiSpeechPanel() : ""}
     ${state.aiEnabled || state.aiInstalled ? aiPermissionPanel() : ""}
   </section>`;
+}
+
+function aiSpeechPanel(): string {
+  const current = state.settings.aiSpeechLanguage ?? "zh";
+  const options: Array<["auto" | "zh" | "en", string]> = [
+    ["zh", "中文"],
+    ["auto", "自动检测"],
+    ["en", "English"],
+  ];
+  return `<div class="settings-section">
+    <h3 class="settings-section-title">语音输入</h3>
+    <p class="settings-section-desc">按住说话时的识别语言。说中文却得到同音英文（例如把「翻译」听成 translate），通常是自动检测把中文判成了英文；选「中文」后结果会保持中文。</p>
+    <div class="settings-card">
+      <div class="setting-row">
+        <div class="setting-copy"><div class="setting-title">识别语言</div><div class="setting-desc">中文模式会额外给识别器一句中文提示词，减少同音误判；英文口述请切到 English。</div></div>
+        <div class="setting-control"><div class="chips">${options
+          .map(
+            ([value, label]) =>
+              `<button class="chip${current === value ? " is-active" : ""}" data-settings-action="ai-language" data-value="${value}" data-focus-key="ai-language-${value}">${label}</button>`,
+          )
+          .join("")}</div></div>
+      </div>
+    </div>
+  </div>`;
 }
 
 async function loadModules(): Promise<void> {
@@ -3526,7 +3551,7 @@ async function toggleAiRecording(): Promise<void> {
       refreshActive();
       try {
         const wav = await blobToWavBase64(blob);
-        const text = await api.aiTranscribe(wav);
+        const text = await api.aiTranscribe(wav, state.settings.aiSpeechLanguage ?? "zh");
         if (text.trim()) {
           state.aiInput = text.trim();
           state.aiTranscribing = false;
@@ -8464,6 +8489,13 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       // 大类开关是强制闸门：开启时默认放行全部小类，关闭时同步清空小类。
       for (const child of children[key] ?? []) updated[child] = next;
       patchSettings({ aiPermissions: updated });
+      return;
+    }
+    case "ai-language": {
+      const value = actionEl.dataset.value;
+      if (value === "zh" || value === "en" || value === "auto") {
+        patchSettings({ aiSpeechLanguage: value });
+      }
       return;
     }
     case "plugins-refresh":

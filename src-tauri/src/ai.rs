@@ -872,7 +872,7 @@ pub fn chat(_messages: Value, _tools: Value) -> Result<Value, String> {
 /* ── 语音识别 ──────────────────────────────────────────────── */
 
 #[cfg(windows)]
-pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
+pub fn transcribe(paths: &Paths, wav_base64: &str, language: &str) -> Result<String, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use std::fs;
     use std::os::windows::process::CommandExt;
@@ -898,17 +898,28 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
     let prefix = dir.join(format!("voice-{stamp}"));
     fs::write(&wav, &bytes).map_err(|error| format!("无法保存录音：{error}"))?;
 
-    let mut child = Command::new(&exe)
+    let lang = match language {
+        "zh" | "en" => language,
+        _ => "auto",
+    };
+    let mut command = Command::new(&exe);
+    command
         .arg("-m")
         .arg(&model)
         .arg("-f")
         .arg(&wav)
         .arg("-l")
-        .arg("auto")
+        .arg(lang)
         .arg("-nt")
         .arg("-otxt")
         .arg("-of")
-        .arg(&prefix)
+        .arg(&prefix);
+    // 短音频的语言检测容易把中文听成英文（输出同音英文词），
+    // 中文模式下再补一句中文提示词，把结果锚定在普通话与简体中文。
+    if lang == "zh" {
+        command.arg("--prompt").arg("以下是普通话的句子。");
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(0x0800_0000)
@@ -976,7 +987,7 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
         let logged = fs::write(
             &log,
             format!(
-                "time: {}\nexe: {}\nmodel: {}\naudio: {}\nexit: {code}\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                "time: {}\nlanguage: {lang}\nexe: {}\nmodel: {}\naudio: {}\nexit: {code}\n--- stderr ---\n{}\n--- stdout ---\n{}",
                 crate::store::now_millis(),
                 exe.display(),
                 model.display(),
@@ -1020,7 +1031,7 @@ fn drain_pipe<T: std::io::Read>(pipe: Option<T>) -> String {
 }
 
 #[cfg(not(windows))]
-pub fn transcribe(_paths: &Paths, _wav_base64: &str) -> Result<String, String> {
+pub fn transcribe(_paths: &Paths, _wav_base64: &str, _language: &str) -> Result<String, String> {
     Err("AI 助手仅支持 Windows".to_string())
 }
 
