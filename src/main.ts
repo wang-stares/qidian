@@ -2804,6 +2804,19 @@ function scanPanel(): string {
   const hiddenApps = state.settings.hidden
     .map((id) => appMap().get(id))
     .filter((app): app is AppEntry => Boolean(app));
+  const sourceCounts = new Map<AppEntry["source"], number>();
+  for (const app of state.apps) {
+    sourceCounts.set(app.source, (sourceCounts.get(app.source) ?? 0) + 1);
+  }
+  const sourceRows = (Object.keys(SOURCE_LABELS) as AppEntry["source"][])
+    .filter((key) => (sourceCounts.get(key) ?? 0) > 0)
+    .map(
+      (key) =>
+        `<div class="scan-source-row"><span>${SOURCE_LABELS[key]}</span><span>${sourceCounts.get(
+          key,
+        )}</span></div>`,
+    )
+    .join("");
   const hiddenHtml =
     hiddenApps.length > 0
       ? `<div class="settings-section">
@@ -2826,6 +2839,15 @@ function scanPanel(): string {
       : "";
 
   return `<div class="settings-section">
+      <h3 class="settings-section-title">扫描来源</h3>
+      <p class="settings-section-desc">共 ${state.apps.length} 个应用。开始菜单索引与任务栏搜索同源（shell:AppsFolder）；若某个应用缺失，请先在 Windows 开始菜单确认它是否可见，再回到这里重新扫描。</p>
+      <div class="settings-card">
+        <div class="scan-source-list">${
+          sourceRows || `<div class="scan-source-row"><span>尚未扫描</span><span>0</span></div>`
+        }</div>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3 class="settings-section-title">扫描范围</h3>
       <div class="settings-card">
         <div class="setting-row">

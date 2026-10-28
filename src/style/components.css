@@ -7227,3 +7227,24 @@ mark {
 .app[data-lowpower="true"][data-theme="macos"] .modal-layer {
   backdrop-filter: none;
 }
+
+/* ── 扫描来源统计 ────────────────────────────────────────────── */
+.scan-source-list {
+  display: grid;
+  gap: 6px;
+  padding: 12px 16px;
+}
+
+.scan-source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.scan-source-row span:last-child {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

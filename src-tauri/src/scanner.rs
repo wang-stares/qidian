@@ -803,6 +803,13 @@ fn resolve_shortcut(path: &str, display_name: &str) -> ShortcutTarget {
         }
         let exe = String::from_utf16_lossy(&buffer[..length]);
         if !Path::new(&exe).is_file() || !is_app_target(&exe) {
+            // MSIX / Store 应用的安装目录（WindowsApps）受系统 ACL 保护，
+            // 普通权限下 is_file() 可能失败，但开始菜单 .lnk 仍能正常启动。
+            // 这类快捷方式保留 .lnk 作为启动入口，避免整条应用被丢弃。
+            let lower = exe.to_lowercase();
+            if lower.contains(r"\windowsapps\") && is_app_target(&exe) {
+                return ShortcutTarget::Unresolved;
+            }
             return ShortcutTarget::Missing;
         }
         // 快捷方式指向卸载程序（部分厂商把开始菜单项错误地指向 unins.exe）时，
