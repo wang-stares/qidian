@@ -202,6 +202,16 @@ export interface AiPermissions {
   settingsOpen: boolean;
 }
 
+export interface AiModelInfo {
+  id: string;
+  label: string;
+  bytes: number;
+  memory: string;
+  note: string;
+  installed: boolean;
+  selected: boolean;
+}
+
 export interface AiStatus {
   enabled: boolean;
   installed: boolean;
@@ -210,6 +220,8 @@ export interface AiStatus {
   totalBytes: number;
   modelLabel: string;
   downloading: boolean;
+  model: string;
+  models: AiModelInfo[];
 }
 
 export interface AiProgress {

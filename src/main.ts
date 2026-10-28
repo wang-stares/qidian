@@ -226,6 +226,8 @@ interface UiState {
   aiSearchIds: string[];
   aiInput: string;
   aiBusy: boolean;
+  /** 模型进程正在启动（首次加载或预热）。 */
+  aiWarming: boolean;
   aiProgress: AiProgress | null;
   aiError: string | null;
   aiRecording: boolean;
@@ -382,6 +384,7 @@ const state: UiState = {
   aiSearchIds: [],
   aiInput: "",
   aiBusy: false,
+  aiWarming: false,
   aiProgress: null,
   aiError: null,
   aiRecording: false,
@@ -1206,10 +1209,12 @@ function setWorkspace(id: WorkspaceTab): void {
     if (id === "launcher") clearSearch(false);
     return;
   }
+  const leavingAi = state.workspace === "ai" && id !== "ai";
   state.workspace = id;
   state.resetScroll = true;
   state.inspectorId = null;
   closeMenu();
+  if (leavingAi) stopAiServer();
   renderAll();
   if (id === "background") loadBackground();
   if (id === "performance") void loadPerformanceStatus();
@@ -2399,8 +2404,9 @@ const AI_PHASES: Record<string, string> = {
 
 const AI_SYSTEM_PROMPT =
   "你是启点（QiDian）内置的本地 AI 助手。回答要简洁、直接，使用简体中文。" +
-  "当用户要求打开、启动或查找某个应用时，必须先调用 search_apps 获取候选，再调用 launch_app 启动；" +
-  "候选为空时如实说明，不要编造应用。" +
+  "当用户要求打开、启动或查找某个应用时，调用 launch_app，query 可以直接填应用名称（如「微信」），" +
+  "也可以先调用 search_apps 再传候选里的 app_id；" +
+  "launch_app 返回多个候选时，把候选名称告诉用户让他选，不要编造应用。" +
   "当用户要求关闭、退出或结束后台应用时，先调用 list_running_apps 找到对应 app 键名，再调用 close_app；" +
   "close_app 会向用户弹出确认卡，用户拒绝时不要重复尝试。" +
   "只有在用户明确要求修改设置时才调用 open_settings。" +
@@ -2426,11 +2432,14 @@ const AI_TOOLS = [
     type: "function",
     function: {
       name: "launch_app",
-      description: "启动 search_apps 返回的某个应用，必须使用候选里的 app_id。",
+      description:
+        "启动应用。参数 query 传应用名称（如「微信」）、拼音或 search_apps 返回的 app_id；名称唯一匹配时会直接启动。",
       parameters: {
         type: "object",
-        properties: { app_id: { type: "string", description: "search_apps 返回的应用 id" } },
-        required: ["app_id"],
+        properties: {
+          query: { type: "string", description: "应用名称、拼音或 app_id" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -2588,12 +2597,41 @@ async function refreshAiStatus(): Promise<void> {
   refreshActive();
 }
 
+const AI_RUNTIME_BYTES = 24_376_086 + 8_928_640;
+const AI_WHISPER_BYTES = 147_951_465;
+
+function aiModelCards(): string {
+  const models = state.aiStatus?.models ?? [];
+  const busy = Boolean(state.aiProgress || state.aiStatus?.downloading);
+  return `<div class="ai-models">
+    ${models
+      .map(
+        (model) => `<button class="ai-model-card${model.selected ? " is-selected" : ""}" data-ai-action="model" data-value="${escapeHtml(
+          model.id,
+        )}" ${busy ? "disabled" : ""}>
+          <span class="ai-model-radio" aria-hidden="true"></span>
+          <span class="ai-model-copy">
+            <span class="ai-model-title"><span>${escapeHtml(model.label)}${
+              model.installed ? `<i class="ai-model-badge">已下载</i>` : ""
+            }</span><em>${formatBytes(model.bytes)}</em></span>
+            <span class="ai-model-note">${escapeHtml(model.memory)} · ${escapeHtml(model.note)}</span>
+          </span>
+        </button>`,
+      )
+      .join("")}
+  </div>`;
+}
+
 function aiSetupPanel(): string {
   const progress = state.aiProgress;
   const downloading = Boolean(progress) || Boolean(state.aiStatus?.downloading);
   const percent = progress?.percent ?? 0;
   const phase = progress ? (AI_PHASES[progress.phase] ?? progress.phase) : "";
-  const total = state.aiStatus?.totalBytes ?? 1_265_272_291;
+  const models = state.aiStatus?.models ?? [];
+  const selected = models.find((model) => model.selected);
+  const modelBytes = selected?.bytes ?? 0;
+  const total = AI_RUNTIME_BYTES + modelBytes + AI_WHISPER_BYTES;
+  const others = models.filter((model) => model.installed && !model.selected);
   return `<div class="ai-shell ai-setup">
     <div class="ai-setup-hero">
       <span class="ai-avatar is-large">${icon("sparkle")}</span>
@@ -2608,13 +2646,26 @@ function aiSetupPanel(): string {
       <span>${icon("mic")}语音对话</span>
       <span>${icon("shield")}完全离线</span>
     </div>
+    <div class="ai-models-head">
+      <strong>选择模型</strong>
+      <span>低配电脑选 0.5B，性能越好越可以往上选</span>
+    </div>
+    ${aiModelCards()}
     <div class="ai-pack">
-      <div class="ai-pack-row"><span>llama.cpp 推理运行时</span><span>24 MB</span></div>
-      <div class="ai-pack-row"><span>Qwen2.5-1.5B-Instruct（Q4）</span><span>1.04 GB</span></div>
-      <div class="ai-pack-row"><span>whisper.cpp 语音运行时</span><span>9 MB</span></div>
+      <div class="ai-pack-row"><span>推理与语音运行时（llama.cpp + whisper.cpp）</span><span>33 MB</span></div>
+      <div class="ai-pack-row"><span>${escapeHtml(selected?.label ?? "语言模型")}（Q4）</span><span>${formatBytes(
+        modelBytes,
+      )}</span></div>
       <div class="ai-pack-row"><span>Whisper Base 语音识别模型</span><span>141 MB</span></div>
       <div class="ai-pack-row is-total"><span>合计</span><span>${formatBytes(total)}</span></div>
     </div>
+    ${
+      others.length > 0
+        ? `<p class="ai-pack-hint">切换模型后会在新模型下载完成时删除旧模型文件：${escapeHtml(
+            others.map((model) => model.label).join("、"),
+          )}。</p>`
+        : ""
+    }
     ${
       downloading
         ? `<div class="ai-download-state">
@@ -2634,10 +2685,10 @@ function aiSetupPanel(): string {
     <div class="ai-setup-actions">
       <button class="primary-btn ai-download" data-ai-action="download" ${
         downloading ? "disabled" : ""
-      }>${downloading ? "正在下载…" : "下载并安装（约 1.2 GB）"}</button>
+      }>${downloading ? "正在下载…" : `下载并安装（约 ${formatBytes(total)}）`}</button>
       <button class="ghost-btn" data-ai-action="refresh">重新检测</button>
     </div>
-    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败自动换源并保留断点；安装完成后完全离线。下载后可在 设置 › 插件 › AI 工具权限 中调整模型能做什么。</p>
+    <p class="ai-footnote">未下载时不会写入任何模型文件，也不占用内存；模型只在打开 AI 页输入时启动，离开或空闲后自动释放。下载失败会自动换源并保留断点。</p>
   </div>`;
 }
 
@@ -2698,18 +2749,31 @@ function aiPanel(): string {
       : `<div class="ai-shell"><div class="ai-loading"><span class="inline-spinner"></span>正在检测本地 AI 组件…</div></div>`;
   }
   const messages = state.aiMessages.map(aiMessageHtml).join("");
+  const models = status?.models ?? [];
+  const modelOptions = models
+    .map(
+      (model) =>
+        `<option value="${escapeHtml(model.id)}"${model.selected ? " selected" : ""}>${escapeHtml(
+          model.label,
+        )}${model.installed ? " · 已下载" : " · 需下载"}</option>`,
+    )
+    .join("");
+  const headState = state.aiWarming
+    ? "正在加载本地模型…"
+    : status?.running
+      ? "本地模型已启动"
+      : "本地模型 · 输入时启动";
   return `<div class="ai-shell ai-chat">
     <header class="ai-head">
       <div class="ai-head-copy">
         <span class="ai-avatar">${icon("sparkle")}</span>
         <div>
-          <div class="ai-head-status${status?.running ? " is-on" : ""}"><span class="ai-dot"></span>${
-            status?.running ? "本地模型已启动" : "本地模型 · 按需启动"
-          }</div>
-          <p>${escapeHtml(status?.modelLabel ?? "Qwen2.5-1.5B · Whisper Base")} · 完全离线</p>
+          <div class="ai-head-status${status?.running ? " is-on" : ""}"><span class="ai-dot"></span>${headState}</div>
+          <p>${escapeHtml(status?.modelLabel ?? "Qwen2.5-1.5B")} · Whisper Base · 完全离线</p>
         </div>
       </div>
       <div class="ai-head-actions">
+        <select class="ai-model-select" data-ai-model title="切换模型">${modelOptions}</select>
         <button class="ai-icon-btn" data-ai-action="permissions" title="AI 工具权限">${icon(
           "shield",
         )}</button>
@@ -2722,6 +2786,11 @@ function aiPanel(): string {
     <div class="ai-messages">
       ${messages || aiSuggestions()}
       ${state.aiPendingClose ? aiCloseConfirmHtml() : ""}
+      ${
+        state.aiWarming
+          ? `<div class="ai-warm"><span class="inline-spinner"></span>正在加载本地模型，第一次约需几秒…</div>`
+          : ""
+      }
       ${
         state.aiBusy
           ? `<div class="ai-typing"><span></span><span></span><span></span></div>`
@@ -2740,35 +2809,50 @@ function aiPanel(): string {
         "send",
       )}</button>
     </div>
-    <p class="ai-footnote">对话与录音只在本机处理；模型回答可能出错，启动应用前会先检索本机索引。<button class="ai-link" data-ai-action="remove">删除本地组件</button></p>
+    <p class="ai-footnote">对话与录音只在本机处理；离开 AI 页或空闲 2 分钟后模型会自动退出以释放内存。<button class="ai-link" data-ai-action="remove">删除本地组件</button></p>
   </div>`;
 }
 
 function aiSearchApps(query: string): Array<Record<string, string>> {
-  const needle = query.trim().toLowerCase();
+  const needle = normalizeText(query);
   if (!needle) return [];
-  const compactNeedle = needle.replace(/\s+/g, "");
-  const scored = state.apps
-    .map((app) => {
-      const name = app.name.toLowerCase();
-      const compact = name.replace(/\s+/g, "");
-      const publisher = (app.publisher ?? "").toLowerCase();
-      let score = 0;
-      if (name === needle) score = 100;
-      else if (name.includes(needle)) score = 82;
-      else if (compact.includes(compactNeedle)) score = 70;
-      else if (publisher.includes(needle)) score = 42;
-      return { app, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || left.app.name.localeCompare(right.app.name))
-    .slice(0, 8);
-  return scored.map(({ app }) => ({
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  const scored: Array<{ app: AppEntry; score: number }> = [];
+  for (const app of visibleApps()) {
+    const index = searchIndex(app);
+    const score = matchScore(index, tokens, needle) ?? fuzzyMatchScore(index, tokens, needle);
+    if (score !== null && score > 0) scored.push({ app, score });
+  }
+  scored.sort((left, right) => right.score - left.score || left.app.name.localeCompare(right.app.name));
+  return scored.slice(0, 8).map(({ app }) => ({
     app_id: app.id,
     name: app.name,
     category: app.category,
     publisher: app.publisher ?? "",
   }));
+}
+
+/**
+ * 把模型给的应用名 / app_id 解析成唯一应用。
+ * 名称完全一致，或搜索结果只有一个时才直接启动；多个候选返回名字让模型追问。
+ */
+function resolveAiApp(raw: string): { app?: AppEntry; error?: string; ambiguous?: string[] } {
+  const target = raw.trim();
+  if (!target) return { error: "请提供应用名称" };
+  const byId = state.apps.find((item) => item.id === target);
+  if (byId) return { app: byId };
+  const candidates = aiSearchApps(target);
+  if (candidates.length === 0) {
+    return { error: `没有找到「${target}」，请换一个名称或先确认应用已安装` };
+  }
+  const needle = normalizeText(target);
+  const exact = candidates.find((item) => normalizeText(String(item.name)) === needle);
+  const pick = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (!pick) {
+    return { ambiguous: candidates.slice(0, 3).map((item) => String(item.name)) };
+  }
+  const app = state.apps.find((item) => item.id === pick.app_id);
+  return app ? { app } : { error: "应用索引里没有这个应用" };
 }
 
 async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
@@ -2794,14 +2878,34 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
       return { ok: true, apps, count: apps.length };
     }
     case "launch_app": {
-      const id = typeof args.app_id === "string" ? args.app_id : "";
-      if (!state.aiSearchIds.includes(id)) {
-        return { ok: false, error: "只能启动 search_apps 刚返回的应用，请先搜索" };
+      const raw =
+        typeof args.query === "string"
+          ? args.query
+          : typeof args.app_id === "string"
+            ? args.app_id
+            : typeof args.name === "string"
+              ? args.name
+              : "";
+      const resolved = resolveAiApp(raw);
+      if (!resolved.app) {
+        if (resolved.ambiguous) {
+          return {
+            ok: false,
+            error: `找到多个候选：${resolved.ambiguous.join("、")}，请让用户确认要启动哪一个`,
+            candidates: resolved.ambiguous,
+          };
+        }
+        return { ok: false, error: resolved.error ?? "没有找到这个应用" };
       }
-      const app = state.apps.find((item) => item.id === id);
-      if (!app) return { ok: false, error: "应用 id 不存在，请先调用 search_apps" };
-      const result = await api.launch(app.id);
-      return { ok: result.ok, name: app.name, error: result.error ?? "" };
+      const result = await api.launch(resolved.app.id);
+      if (result.ok) {
+        state.aiSearchIds = [resolved.app.id];
+      }
+      return {
+        ok: result.ok,
+        name: resolved.app.name,
+        error: result.ok ? "" : (result.error ?? "启动失败"),
+      };
     }
     case "list_running_apps": {
       const processes = await api.listProcesses();
@@ -2875,16 +2979,139 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
   }
 }
 
+let aiStartPromise: Promise<void> | null = null;
+let aiWarmTimer: number | undefined;
+
+/** 只更新「加载中」提示，避免预热时整页重绘打断输入。 */
+function updateAiWarmUi(): void {
+  const head = document.querySelector<HTMLElement>(".ai-head-status");
+  if (head) {
+    const running = Boolean(state.aiStatus?.running);
+    head.classList.toggle("is-on", running);
+    head.innerHTML = `<span class="ai-dot"></span>${
+      state.aiWarming ? "正在加载本地模型…" : running ? "本地模型已启动" : "本地模型 · 输入时启动"
+    }`;
+  }
+  const panel = document.querySelector<HTMLElement>(".ai-messages");
+  if (!panel) return;
+  const existing = panel.querySelector(".ai-warm");
+  if (state.aiWarming && !existing) {
+    const node = document.createElement("div");
+    node.className = "ai-warm";
+    node.innerHTML = `<span class="inline-spinner"></span>正在加载本地模型，第一次约需几秒…`;
+    panel.appendChild(node);
+  } else if (!state.aiWarming && existing) {
+    existing.remove();
+  }
+}
+
+async function refreshAiStatusQuiet(): Promise<void> {
+  try {
+    state.aiStatus = await api.aiStatus();
+    state.aiInstalled = state.aiStatus.installed;
+  } catch (error) {
+    state.aiError = String(error);
+  }
+}
+
 async function ensureAiServer(): Promise<void> {
   window.clearTimeout(aiIdleTimer);
   if (state.aiStatus?.running) return;
-  await api.aiStart();
-  await refreshAiStatus();
+  if (aiStartPromise) return aiStartPromise;
+  state.aiWarming = true;
+  if (state.workspace === "ai") updateAiWarmUi();
+  aiStartPromise = (async () => {
+    try {
+      await api.aiStart();
+      await refreshAiStatusQuiet();
+    } finally {
+      aiStartPromise = null;
+      state.aiWarming = false;
+      if (state.workspace === "ai") {
+        updateAiWarmUi();
+      } else {
+        // 启动期间已经离开 AI 页：立即释放，不把模型常驻在内存里。
+        void api.aiStop();
+      }
+    }
+  })();
+  return aiStartPromise;
+}
+
+/** 用户一开始输入就预热模型，避免「发一条 → 等加载 → 再发一条」。 */
+function scheduleAiWarm(): void {
+  if (!state.aiInstalled || state.aiBusy) return;
+  if (state.aiStatus?.running) {
+    // 已经在跑：每次输入只顺延释放时间，不再重复启动。
+    scheduleAiIdleStop();
+    return;
+  }
+  if (state.aiWarming || aiStartPromise) return;
+  window.clearTimeout(aiWarmTimer);
+  aiWarmTimer = window.setTimeout(() => {
+    if (state.workspace !== "ai" || !state.aiInstalled) return;
+    void ensureAiServer()
+      .then(() => scheduleAiIdleStop())
+      .catch((error) => {
+        state.aiError = String(error);
+        refreshActive();
+      });
+  }, 450);
+}
+
+/** 离开 AI 页或长时间不输入时释放模型进程。 */
+function stopAiServer(): void {
+  window.clearTimeout(aiIdleTimer);
+  window.clearTimeout(aiWarmTimer);
+  if (state.aiBusy || aiStartPromise) return;
+  if (!state.aiStatus?.running) return;
+  void api.aiStop().then(() => refreshAiStatus());
+}
+
+/**
+ * 「打开 / 启动 / 运行某个应用」是明确指令，直接检索并启动，不依赖模型工具调用，
+ * 既保证成功率，也避免为一条启动命令加载整个模型。
+ */
+const AI_LAUNCH_RE =
+  /^(?:请|麻烦|帮我|能不能|能否|可以|可以帮我)?\s*(?:打开一下|打开|启动一下|启动|运行一下|运行|开一下)\s*(.+?)(?:吧|呗|呀|啊)?$/;
+const AI_LAUNCH_REVERSE = /^把\s*(.+?)\s*(?:打开|启动|运行)(?:一下)?$/;
+const AI_LAUNCH_QUESTION = /怎么|如何|为什么|为啥|吗[？?]?$|能不能不/;
+
+async function tryDirectLaunch(text: string): Promise<boolean> {
+  if (!aiToolAllowed("search_apps") || !aiToolAllowed("launch_app")) return false;
+  const body = text.trim();
+  if (AI_LAUNCH_QUESTION.test(body)) return false;
+  const match = body.match(AI_LAUNCH_RE) ?? body.match(AI_LAUNCH_REVERSE);
+  if (!match) return false;
+  const query = match[1].trim().replace(/[。.!！?？]+$/, "");
+  if (!query || query.length > 24) return false;
+  const resolved = resolveAiApp(query);
+  if (!resolved.app) return false;
+  state.aiInput = "";
+  state.aiMessages.push({ role: "user", content: body });
+  state.aiBusy = true;
+  state.aiError = null;
+  refreshActive();
+  try {
+    const result = await api.launch(resolved.app.id);
+    state.aiMessages.push({
+      role: "assistant",
+      content: result.ok
+        ? `已为你启动「${resolved.app.name}」。`
+        : `启动「${resolved.app.name}」失败：${result.error ?? "未知原因"}`,
+    });
+  } finally {
+    state.aiBusy = false;
+    refreshActive();
+    scrollAiToBottom();
+  }
+  return true;
 }
 
 async function sendAiMessage(text: string, speak = false): Promise<void> {
   const content = text.trim();
   if (!content || state.aiBusy) return;
+  if (await tryDirectLaunch(content)) return;
   state.aiInput = "";
   state.aiError = null;
   state.aiMessages.push({ role: "user", content });
@@ -2951,8 +3178,9 @@ function scheduleAiIdleStop(): void {
   window.clearTimeout(aiIdleTimer);
   aiIdleTimer = window.setTimeout(() => {
     if (state.aiBusy) return;
+    if (state.workspace !== "ai") return;
     void api.aiStop().then(() => refreshAiStatus());
-  }, 5 * 60 * 1000);
+  }, 2 * 60 * 1000);
 }
 
 function scrollAiToBottom(): void {
@@ -2976,6 +3204,27 @@ function speakAi(text: string): void {
   window.speechSynthesis.speak(utterance);
 }
 
+async function switchAiModel(id: string): Promise<void> {
+  if (!id || state.aiBusy || state.aiProgress) return;
+  if (id === state.aiStatus?.model) return;
+  const model = state.aiStatus?.models.find((item) => item.id === id);
+  if (!model) return;
+  try {
+    state.aiError = null;
+    await api.aiSetModel(id);
+    await refreshAiStatus();
+    showToast(
+      state.aiStatus?.installed
+        ? `已切换到 ${model.label}`
+        : `已选择 ${model.label}，下载后即可使用`,
+      state.aiStatus?.installed ? "success" : "info",
+    );
+  } catch (error) {
+    state.aiError = String(error);
+    refreshActive();
+  }
+}
+
 async function downloadAiPack(): Promise<void> {
   if (state.aiProgress || state.aiStatus?.downloading) return;
   state.aiError = null;
@@ -2994,7 +3243,8 @@ async function downloadAiPack(): Promise<void> {
 }
 
 async function removeAiPack(): Promise<void> {
-  if (!window.confirm("删除本地 AI 组件？将释放约 1.2 GB 空间，对话记录也会清空。")) return;
+  const used = state.aiStatus?.downloadedBytes ?? 0;
+  if (!window.confirm(`删除本地 AI 组件？将释放约 ${formatBytes(used)} 空间，对话记录也会清空。`)) return;
   try {
     await api.aiRemove();
     state.aiInstalled = false;
@@ -3125,6 +3375,9 @@ async function handleAiAction(action: string, element: HTMLElement): Promise<voi
       return;
     case "prompt":
       void sendAiMessage(element.dataset.value ?? "");
+      return;
+    case "model":
+      void switchAiModel(element.dataset.value ?? "");
       return;
     case "mic":
       void toggleAiRecording();
@@ -9468,6 +9721,7 @@ els.contentBody.addEventListener("input", (event) => {
   const aiInput = (event.target as HTMLElement).closest<HTMLTextAreaElement>("[data-ai-input]");
   if (aiInput) {
     state.aiInput = aiInput.value;
+    if (aiInput.value.trim()) scheduleAiWarm();
     return;
   }
   const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-app-search]");
@@ -9482,6 +9736,13 @@ els.contentBody.addEventListener("keydown", (event) => {
     event.preventDefault();
     void sendAiMessage((target as HTMLTextAreaElement).value);
   }
+});
+els.contentBody.addEventListener("focusin", (event) => {
+  if ((event.target as HTMLElement).matches("[data-ai-input]")) scheduleAiWarm();
+});
+els.contentBody.addEventListener("change", (event) => {
+  const select = (event.target as HTMLElement).closest<HTMLSelectElement>("[data-ai-model]");
+  if (select) void switchAiModel(select.value);
 });
 els.modalLayer.addEventListener("input", onModalInput);
 els.modalLayer.addEventListener("keydown", onModalKeydown);

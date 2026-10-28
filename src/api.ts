@@ -1,5 +1,6 @@
 import type {
   AiChatMessage,
+  AiModelInfo,
   AiProgress,
   AiStatus,
   AppEntry,
@@ -39,10 +40,37 @@ const TAURI = "__TAURI_INTERNALS__" in window;
 const MOCK_KEY = "qidian.settings.v1";
 let mockModulePromise: Promise<typeof import("./mock")> | null = null;
 let mockAutostart = localStorage.getItem("qidian.mock.autostart") === "1";
-let mockAiInstalled = false;
+let mockInstalledModel: string | null = null;
 let mockAiRunning = false;
+let mockAiModel = "qwen1.5b";
 
+const MOCK_WHISPER_BYTES = 147_951_465;
 const AI_TOTAL_BYTES = 1_265_272_291;
+
+/** 与 Rust 侧 MODELS 保持一致的演示数据，仅用于浏览器预览。 */
+const MOCK_MODELS: Array<Omit<AiModelInfo, "installed" | "selected">> = [
+  {
+    id: "qwen0.5b",
+    label: "Qwen2.5-0.5B",
+    bytes: 491_400_032,
+    memory: "内存约 1.2 GB",
+    note: "低配电脑首选：下载最小、响应最快，复杂指令偶尔理解不到位",
+  },
+  {
+    id: "qwen1.5b",
+    label: "Qwen2.5-1.5B",
+    bytes: 1_117_320_736,
+    memory: "内存约 2.2 GB",
+    note: "默认推荐：问答、工具调用与速度平衡",
+  },
+  {
+    id: "qwen3b",
+    label: "Qwen2.5-3B",
+    bytes: 2_104_932_768,
+    memory: "内存约 3.5 GB",
+    note: "性能较好的电脑：理解与工具调用最稳，启动更慢",
+  },
+];
 
 export const isTauri = TAURI;
 
@@ -201,7 +229,7 @@ const mockBridge = {
       apps: MOCK_APPS,
       scannedAt: Date.now() - 42 * 60 * 1000,
       aiEnabled: true,
-      aiInstalled: mockAiInstalled,
+      aiInstalled: mockInstalledModel !== null,
     };
   },
 
@@ -291,14 +319,21 @@ const mockBridge = {
 
   async aiStatus(): Promise<AiStatus> {
     await sleep(80);
+    const spec = MOCK_MODELS.find((item) => item.id === mockAiModel) ?? MOCK_MODELS[1];
     return {
       enabled: true,
-      installed: mockAiInstalled,
+      installed: mockInstalledModel === spec.id,
       running: mockAiRunning,
-      downloadedBytes: mockAiInstalled ? AI_TOTAL_BYTES : 0,
-      totalBytes: AI_TOTAL_BYTES,
-      modelLabel: "Qwen2.5-1.5B · Whisper Base",
+      downloadedBytes: mockInstalledModel === spec.id ? AI_TOTAL_BYTES : 0,
+      totalBytes: spec.bytes + MOCK_WHISPER_BYTES,
+      modelLabel: spec.label,
       downloading: false,
+      model: spec.id,
+      models: MOCK_MODELS.map((item) => ({
+        ...item,
+        installed: item.id === mockInstalledModel,
+        selected: item.id === spec.id,
+      })),
     };
   },
 
@@ -307,9 +342,16 @@ const mockBridge = {
     await sleep(20);
   },
 
+  async aiSetModel(model: string): Promise<void> {
+    if (!MOCK_MODELS.some((item) => item.id === model)) throw new Error("未知的模型");
+    mockAiModel = model;
+    mockAiRunning = false;
+    await sleep(40);
+  },
+
   async aiDownload(): Promise<void> {
     await sleep(900);
-    mockAiInstalled = true;
+    mockInstalledModel = mockAiModel;
   },
 
   async aiStart(): Promise<void> {
@@ -384,7 +426,7 @@ const mockBridge = {
   },
 
   async aiRemove(): Promise<void> {
-    mockAiInstalled = false;
+    mockInstalledModel = null;
     mockAiRunning = false;
   },
 
@@ -761,6 +803,10 @@ const tauriBridge = {
 
   aiSetEnabled(enabled: boolean): Promise<void> {
     return tauriInvoke<void>("ai_set_enabled", { enabled });
+  },
+
+  aiSetModel(model: string): Promise<void> {
+    return tauriInvoke<void>("ai_set_model", { model });
   },
 
   aiDownload(): Promise<void> {

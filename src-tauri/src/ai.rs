@@ -20,21 +20,71 @@ const LLAMA_BYTES: u64 = 24_376_086;
 const WHISPER_URL: &str =
     "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip";
 const WHISPER_BYTES: u64 = 8_928_640;
-const QWEN_FILE: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const QWEN_BYTES: u64 = 1_117_320_736;
-const QWEN_URLS: &[&str] = &[
-    "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-];
 const WHISPER_MODEL: &str = "ggml-base.bin";
 const WHISPER_MODEL_BYTES: u64 = 147_951_465;
 const WHISPER_MODEL_URLS: &[&str] = &[
     "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
 ];
-/// 整个组件包的总字节数，用于把所有分项合并成一条总进度。
-const PACK_BYTES: u64 = LLAMA_BYTES + WHISPER_BYTES + QWEN_BYTES + WHISPER_MODEL_BYTES;
+
+/// 可选语言模型。低配电脑选 0.5B，性能越好越可以往上选。
+pub struct ModelSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub file: &'static str,
+    pub bytes: u64,
+    pub memory: &'static str,
+    pub note: &'static str,
+    pub context: u32,
+    pub urls: &'static [&'static str],
+}
+
+pub const DEFAULT_MODEL: &str = "qwen1.5b";
+
+pub const MODELS: &[ModelSpec] = &[
+    ModelSpec {
+        id: "qwen0.5b",
+        label: "Qwen2.5-0.5B",
+        file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        bytes: 491_400_032,
+        memory: "内存约 1.2 GB",
+        note: "低配电脑首选：下载最小、响应最快，复杂指令偶尔理解不到位",
+        context: 4096,
+        urls: &[
+            "https://hf-mirror.com/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            "https://modelscope.cn/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/master/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        ],
+    },
+    ModelSpec {
+        id: "qwen1.5b",
+        label: "Qwen2.5-1.5B",
+        file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        bytes: 1_117_320_736,
+        memory: "内存约 2.2 GB",
+        note: "默认推荐：问答、工具调用与速度平衡",
+        context: 4096,
+        urls: &[
+            "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        ],
+    },
+    ModelSpec {
+        id: "qwen3b",
+        label: "Qwen2.5-3B",
+        file: "qwen2.5-3b-instruct-q4_k_m.gguf",
+        bytes: 2_104_932_768,
+        memory: "内存约 3.5 GB",
+        note: "性能较好的电脑：理解与工具调用最稳，启动更慢",
+        context: 3072,
+        urls: &[
+            "https://hf-mirror.com/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+            "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+        ],
+    },
+];
 
 /// 推理进程句柄。只允许一个 llama-server 实例，重复启动直接复用。
 #[derive(Default)]
@@ -47,7 +97,7 @@ pub struct AiState {
 pub struct AiStatus {
     /// 安装器里是否勾选了 AI 助手，或用户后来在插件页启用。
     pub enabled: bool,
-    /// 运行时与两个模型是否都已落盘。
+    /// 运行时、语音模型与所选语言模型是否都已落盘。
     pub installed: bool,
     /// llama-server 是否正在运行。
     pub running: bool,
@@ -55,6 +105,22 @@ pub struct AiStatus {
     pub total_bytes: u64,
     pub model_label: String,
     pub downloading: bool,
+    /// 当前选中的语言模型 id。
+    pub model: String,
+    /// 所有可选语言模型及其安装状态。
+    pub models: Vec<AiModelInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelInfo {
+    pub id: String,
+    pub label: String,
+    pub bytes: u64,
+    pub memory: String,
+    pub note: String,
+    pub installed: bool,
+    pub selected: bool,
 }
 
 static DOWNLOADING: Mutex<bool> = Mutex::new(false);
@@ -90,8 +156,19 @@ fn models_dir(paths: &Paths) -> PathBuf {
     ai_dir(paths).join("models")
 }
 
-fn qwen_model(paths: &Paths) -> PathBuf {
-    models_dir(paths).join(QWEN_FILE)
+pub fn model_by_id(id: &str) -> &'static ModelSpec {
+    MODELS
+        .iter()
+        .find(|spec| spec.id == id)
+        .unwrap_or(&MODELS[1])
+}
+
+pub fn selected_spec() -> &'static ModelSpec {
+    model_by_id(&selected_model_id())
+}
+
+fn model_path(paths: &Paths, spec: &ModelSpec) -> PathBuf {
+    models_dir(paths).join(spec.file)
 }
 
 fn whisper_model(paths: &Paths) -> PathBuf {
@@ -133,12 +210,16 @@ fn whisper_cli_exe(paths: &Paths) -> Option<PathBuf> {
 pub fn installed(paths: &Paths) -> bool {
     llama_server_exe(paths).is_some()
         && whisper_cli_exe(paths).is_some()
-        && qwen_model(paths).is_file()
+        && model_path(paths, selected_spec()).is_file()
         && whisper_model(paths).is_file()
 }
 
+pub fn model_installed(paths: &Paths, spec: &ModelSpec) -> bool {
+    model_path(paths, spec).is_file()
+}
+
 fn downloaded_bytes(paths: &Paths) -> u64 {
-    [qwen_model(paths), whisper_model(paths)]
+    [model_path(paths, selected_spec()), whisper_model(paths)]
         .iter()
         .filter_map(|path| std::fs::metadata(path).ok())
         .map(|meta| meta.len())
@@ -178,19 +259,76 @@ pub fn set_enabled(_value: bool) -> Result<(), String> {
     Err("AI 助手仅支持 Windows".to_string())
 }
 
+#[cfg(windows)]
+pub fn selected_model_id() -> String {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let stored = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\QiDian")
+        .and_then(|key| key.get_value::<String, _>("AiModel"))
+        .ok();
+    match stored {
+        Some(id) if MODELS.iter().any(|spec| spec.id == id) => id,
+        _ => DEFAULT_MODEL.to_string(),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn selected_model_id() -> String {
+    DEFAULT_MODEL.to_string()
+}
+
+#[cfg(windows)]
+pub fn set_model(id: &str, state: &AiState) -> Result<(), String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    if !MODELS.iter().any(|spec| spec.id == id) {
+        return Err("未知的模型".to_string());
+    }
+    // 切换模型时先释放当前推理进程，避免继续占用内存。
+    stop(state);
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(r"Software\QiDian")
+        .map_err(|error| format!("无法保存模型偏好：{error}"))?
+        .0;
+    key.set_value("AiModel", &id)
+        .map_err(|error| format!("无法保存模型偏好：{error}"))
+}
+
+#[cfg(not(windows))]
+pub fn set_model(_id: &str, _state: &AiState) -> Result<(), String> {
+    Err("AI 助手仅支持 Windows".to_string())
+}
+
 pub fn is_downloading() -> bool {
     DOWNLOADING.lock().map(|value| *value).unwrap_or(false)
 }
 
 pub fn status(paths: &Paths, state: &AiState) -> AiStatus {
+    let spec = selected_spec();
+    let selected = spec.id.to_string();
+    let models = MODELS
+        .iter()
+        .map(|item| AiModelInfo {
+            id: item.id.to_string(),
+            label: item.label.to_string(),
+            bytes: item.bytes,
+            memory: item.memory.to_string(),
+            note: item.note.to_string(),
+            installed: model_installed(paths, item),
+            selected: item.id == spec.id,
+        })
+        .collect();
     AiStatus {
         enabled: enabled(),
         installed: installed(paths),
         running: state.running(),
         downloaded_bytes: downloaded_bytes(paths),
-        total_bytes: QWEN_BYTES + WHISPER_MODEL_BYTES,
-        model_label: "Qwen2.5-1.5B · Whisper Base".to_string(),
+        total_bytes: spec.bytes + WHISPER_MODEL_BYTES,
+        model_label: spec.label.to_string(),
         downloading: is_downloading(),
+        model: selected,
+        models,
     }
 }
 
@@ -436,8 +574,6 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(windows)]
 pub fn download_pack(app: &AppHandle, paths: &Paths) -> Result<(), String> {
-    use std::fs;
-
     {
         let mut guard = DOWNLOADING.lock().map_err(|_| "下载状态不可用".to_string())?;
         if *guard {
@@ -449,7 +585,6 @@ pub fn download_pack(app: &AppHandle, paths: &Paths) -> Result<(), String> {
     if let Ok(mut guard) = DOWNLOADING.lock() {
         *guard = false;
     }
-    let _ = fs::create_dir_all(&ai_dir(paths));
     result
 }
 
@@ -459,18 +594,20 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
 
     let dir = ai_dir(paths);
     fs::create_dir_all(&dir).map_err(|error| format!("无法创建 AI 目录：{error}"))?;
+    let spec = selected_spec();
+    let pack_total = LLAMA_BYTES + WHISPER_BYTES + spec.bytes + WHISPER_MODEL_BYTES;
     let mut base = 0u64;
 
     if llama_server_exe(paths).is_none() {
         let zip = dir.join("llama.zip");
-        download_asset(app, &[LLAMA_URL], &zip, LLAMA_BYTES, "llama", base, PACK_BYTES)?;
+        download_asset(app, &[LLAMA_URL], &zip, LLAMA_BYTES, "llama", base, pack_total)?;
         extract_zip(
             app,
             &zip,
             &dir.join("llama"),
             "extract",
             base + LLAMA_BYTES,
-            PACK_BYTES,
+            pack_total,
         )?;
         let _ = fs::remove_file(&zip);
         if llama_server_exe(paths).is_none() {
@@ -488,7 +625,7 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
             WHISPER_BYTES,
             "whisper",
             base,
-            PACK_BYTES,
+            pack_total,
         )?;
         extract_zip(
             app,
@@ -496,7 +633,7 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
             &dir.join("whisper"),
             "extract",
             base + WHISPER_BYTES,
-            PACK_BYTES,
+            pack_total,
         )?;
         let _ = fs::remove_file(&zip);
         if whisper_cli_exe(paths).is_none() {
@@ -505,18 +642,18 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
     }
     base += WHISPER_BYTES;
 
-    if !qwen_model(paths).is_file() {
+    if !model_installed(paths, spec) {
         download_asset(
             app,
-            QWEN_URLS,
-            &qwen_model(paths),
-            QWEN_BYTES,
+            spec.urls,
+            &model_path(paths, spec),
+            spec.bytes,
             "model",
             base,
-            PACK_BYTES,
+            pack_total,
         )?;
     }
-    base += QWEN_BYTES;
+    base += spec.bytes;
 
     if !whisper_model(paths).is_file() {
         download_asset(
@@ -526,10 +663,21 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
             WHISPER_MODEL_BYTES,
             "speech",
             base,
-            PACK_BYTES,
+            pack_total,
         )?;
     }
-    emit_progress(app, "done", PACK_BYTES, PACK_BYTES);
+    // 新模型已经落盘，顺手删掉其它模型文件，避免同时占用多份空间。
+    for other in MODELS {
+        if other.id == spec.id {
+            continue;
+        }
+        let _ = fs::remove_file(model_path(paths, other));
+        let _ = fs::remove_file(model_path(paths, other).with_file_name(format!(
+            "{}.part",
+            other.file
+        )));
+    }
+    emit_progress(app, "done", pack_total, pack_total);
     Ok(())
 }
 
@@ -551,8 +699,14 @@ pub fn start(paths: &Paths, state: &AiState) -> Result<(), String> {
     if !installed(paths) {
         return Err("请先下载 AI 组件".to_string());
     }
+    let spec = selected_spec();
     let exe = llama_server_exe(paths).ok_or_else(|| "缺少 llama-server.exe".to_string())?;
-    let model = qwen_model(paths);
+    let model = model_path(paths, spec);
+    // 线程数按本机核心数收敛，既吃满 CPU 又避免在低配机器上抢占过度。
+    let threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .clamp(2, 8);
     {
         let mut guard = state.server.lock().map_err(|_| "AI 状态不可用".to_string())?;
         *guard = None;
@@ -564,9 +718,9 @@ pub fn start(paths: &Paths, state: &AiState) -> Result<(), String> {
             .arg("--port")
             .arg(PORT.to_string())
             .arg("-c")
-            .arg("4096")
+            .arg(spec.context.to_string())
             .arg("-t")
-            .arg("4")
+            .arg(threads.to_string())
             .arg("--jinja")
             .arg("--no-webui")
             .stdin(Stdio::null())

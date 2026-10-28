@@ -94,6 +94,11 @@ fn ai_set_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn ai_set_model(model: String, ai: State<'_, ai::AiState>) -> Result<(), String> {
+    ai::set_model(&model, &ai)
+}
+
+#[tauri::command]
 async fn ai_download(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let paths = state.paths.clone();
     drop(state);
@@ -1717,6 +1722,7 @@ pub fn run() {
             bootstrap,
             ai_status,
             ai_set_enabled,
+            ai_set_model,
             ai_download,
             ai_start,
             ai_stop,
