@@ -16,6 +16,7 @@ import {
   setMemorySaver,
 } from "./api";
 import { escapeHtml, icon } from "./icons";
+import rewardQr from "./assets/reward-qrcode.png";
 import { RELEASES, type Release } from "./changelog";
 import {
   buildSearchIndex,
@@ -8176,6 +8177,16 @@ function aboutPanel(): string {
       <div class="setting-copy"><div class="setting-title">技术栈</div><div class="setting-desc">Tauri 2 · Rust · Windows WebView2 · 无前端框架 · 无后台服务</div></div>
     </div>
     ${updatesPanel()}
+    <div class="settings-section">
+      <h3 class="settings-section-title">赞赏</h3>
+      <div class="settings-card about-reward">
+        <img class="about-reward-img" src="${rewardQr}" alt="微信赞赏码" loading="lazy" />
+        <div class="setting-copy">
+          <div class="setting-title">请作者喝杯奶茶</div>
+          <div class="setting-desc">微信扫一扫即可赞赏。完全自愿，不影响任何功能与后续更新。</div>
+        </div>
+      </div>
+    </div>
     <div class="settings-section">
       <h3 class="settings-section-title">重置与数据</h3>
       <div class="settings-card">

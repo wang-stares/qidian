@@ -1978,6 +1978,22 @@
   font-size: 10px;
 }
 
+.about-reward {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+.about-reward-img {
+  flex: 0 0 auto;
+  width: 132px;
+  height: 132px;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: #fff;
+}
+
 .about-desc {
   margin: 14px 0 0;
   color: var(--text-2);
