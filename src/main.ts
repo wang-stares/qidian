@@ -2389,6 +2389,7 @@ function bootSettings(): string {
 /* ── local AI assistant ───────────────────────────────────────── */
 
 const AI_PHASES: Record<string, string> = {
+  preparing: "正在准备下载",
   llama: "llama.cpp 运行组件",
   whisper: "whisper.cpp 语音组件",
   model: "Qwen2.5-1.5B 语言模型",
@@ -2621,7 +2622,11 @@ function aiSetupPanel(): string {
               percent,
             )}%</span></div>
             <div class="ai-progress"><span style="width:${Math.max(1.5, percent)}%"></span></div>
-            <p>下载完成后会自动解压并校验；已完成的组件会保留，失败可重试。</p>
+            <p>${
+              progress && progress.total > 0
+                ? `${formatBytes(progress.done)} / ${formatBytes(progress.total)} · `
+                : ""
+            }支持断点续传：中断后再次点击会从已下载的位置继续。</p>
           </div>`
         : ""
     }
@@ -2632,7 +2637,7 @@ function aiSetupPanel(): string {
       }>${downloading ? "正在下载…" : "下载并安装（约 1.2 GB）"}</button>
       <button class="ghost-btn" data-ai-action="refresh">重新检测</button>
     </div>
-    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败会自动换源；安装完成后完全离线。下载后可在 设置 › 插件 › AI 工具权限 中调整模型能做什么。</p>
+    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败自动换源并保留断点；安装完成后完全离线。下载后可在 设置 › 插件 › AI 工具权限 中调整模型能做什么。</p>
   </div>`;
 }
 
@@ -2972,9 +2977,9 @@ function speakAi(text: string): void {
 }
 
 async function downloadAiPack(): Promise<void> {
-  if (state.aiProgress) return;
+  if (state.aiProgress || state.aiStatus?.downloading) return;
   state.aiError = null;
-  state.aiProgress = { phase: "llama", done: 0, total: 1, percent: 0 };
+  state.aiProgress = { phase: "preparing", done: 0, total: 0, percent: 0 };
   refreshActive();
   try {
     await api.aiDownload();

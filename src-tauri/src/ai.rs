@@ -24,14 +24,17 @@ const QWEN_FILE: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
 const QWEN_BYTES: u64 = 1_117_320_736;
 const QWEN_URLS: &[&str] = &[
     "https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
     "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
 ];
 const WHISPER_MODEL: &str = "ggml-base.bin";
-const WHISPER_MODEL_BYTES: u64 = 147_951_555;
+const WHISPER_MODEL_BYTES: u64 = 147_951_465;
 const WHISPER_MODEL_URLS: &[&str] = &[
     "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
 ];
+/// 整个组件包的总字节数，用于把所有分项合并成一条总进度。
+const PACK_BYTES: u64 = LLAMA_BYTES + WHISPER_BYTES + QWEN_BYTES + WHISPER_MODEL_BYTES;
 
 /// 推理进程句柄。只允许一个 llama-server 实例，重复启动直接复用。
 #[derive(Default)]
@@ -213,22 +216,34 @@ fn emit_progress(app: &AppHandle, phase: &str, done: u64, total: u64) {
 }
 
 #[cfg(windows)]
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// 下载单个文件：保留 `.part` 断点，按 URL 轮换并多次续传。
+///
+/// `base` / `pack_total` 用于把分项进度折算成整个组件包的总进度。
+#[cfg(windows)]
 fn download_asset(
     app: &AppHandle,
     urls: &[&str],
     dest: &Path,
     expected: u64,
     phase: &str,
+    base: u64,
+    pack_total: u64,
 ) -> Result<(), String> {
     use std::fs;
-    use std::process::{Command, Stdio};
     use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
 
-    if let Ok(meta) = fs::metadata(dest) {
-        if meta.len() >= expected.saturating_mul(98) / 100 {
-            emit_progress(app, phase, expected, expected);
-            return Ok(());
-        }
+    // 允许 2% 的误差：镜像可能修订文件，或解压工具补充了元数据。
+    let enough = expected.saturating_mul(98) / 100;
+    if file_len(dest) >= enough {
+        emit_progress(app, phase, base + expected, pack_total);
+        return Ok(());
+    }
+    if file_len(dest) > 0 {
         let _ = fs::remove_file(dest);
     }
     if let Some(parent) = dest.parent() {
@@ -239,89 +254,132 @@ fn download_asset(
         .and_then(|value| value.to_str())
         .unwrap_or("download.bin");
     let part = dest.with_file_name(format!("{file_name}.part"));
+    // 上次中断时已经下满的临时文件直接转正，避免重复下载。
+    if file_len(&part) >= enough {
+        fs::rename(&part, dest).map_err(|error| format!("无法保存模型文件：{error}"))?;
+        emit_progress(app, phase, base + expected, pack_total);
+        return Ok(());
+    }
     let mut last_error = String::new();
+    let rounds = 3u32;
 
-    for url in urls {
-        let _ = fs::remove_file(&part);
-        let mut child = match Command::new("curl.exe")
-            .args([
-                "-L",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--retry",
-                "2",
-                "--retry-delay",
-                "2",
-                "--connect-timeout",
-                "20",
-                "--output",
-            ])
-            .arg(&part)
-            .arg(url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .creation_flags(0x0800_0000)
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => {
-                return Err(format!(
-                    "无法调用 curl.exe 下载模型（Windows 10 1809+ 自带）：{error}"
-                ))
-            }
-        };
+    for round in 0..rounds {
+        for url in urls {
+            // 每个 URL 最多两轮：第一轮续传，服务器不支持 Range 时清空后从头再来。
+            for _ in 0..2 {
+                let resume = file_len(&part) > 0;
+                let mut command = Command::new("curl.exe");
+                command.args([
+                    "-L",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "20",
+                    // 连续 45 秒低于 4 KB/s 视为卡死，交给外层续传重试。
+                    "--speed-limit",
+                    "4096",
+                    "--speed-time",
+                    "45",
+                    "--output",
+                ]);
+                command.arg(&part);
+                if resume {
+                    command.args(["--continue-at", "-"]);
+                }
+                let mut child = match command
+                    .arg(url)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .creation_flags(0x0800_0000)
+                    .spawn()
+                {
+                    Ok(child) => child,
+                    Err(error) => {
+                        return Err(format!(
+                            "无法调用 curl.exe 下载模型（Windows 10 1809+ 自带）：{error}"
+                        ))
+                    }
+                };
 
-        let mut last_emit = Instant::now();
-        loop {
-            if let Ok(Some(_)) = child.try_wait() {
+                let mut last_emit = Instant::now();
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Ok(None) => {}
+                        Err(_) => {
+                            let _ = child.kill();
+                            break;
+                        }
+                    }
+                    if last_emit.elapsed() >= Duration::from_millis(280) {
+                        emit_progress(app, phase, base + file_len(&part), pack_total);
+                        last_emit = Instant::now();
+                    }
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+
+                let output = child.wait_with_output().ok();
+                let status = output.as_ref().map(|output| output.status);
+                let success = status.map(|status| status.success()).unwrap_or(false);
+                let code = status.and_then(|status| status.code());
+                let size = file_len(&part);
+                if success && (enough..=expected + expected / 50).contains(&size) {
+                    fs::rename(&part, dest)
+                        .map_err(|error| format!("无法保存模型文件：{error}"))?;
+                    emit_progress(app, phase, base + expected, pack_total);
+                    return Ok(());
+                }
+                last_error = output
+                    .and_then(|output| String::from_utf8(output.stderr).ok())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if code == Some(33) {
+                    // 服务器不支持断点续传：清空临时文件，下一轮从头下载。
+                    let _ = fs::remove_file(&part);
+                    continue;
+                }
+                if success && !(enough..=expected + expected / 50).contains(&size) {
+                    // 返回 200 但文件明显不对（例如错误页），丢弃后换源。
+                    let _ = fs::remove_file(&part);
+                }
+                // 其余失败保留 .part，下一轮 URL / 下一轮重试从断点继续。
                 break;
             }
-            if last_emit.elapsed() >= Duration::from_millis(280) {
-                let done = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-                emit_progress(app, phase, done, expected);
-                last_emit = Instant::now();
-            }
-            std::thread::sleep(Duration::from_millis(120));
         }
-
-        let output = child.wait_with_output().ok();
-        let success = output
-            .as_ref()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        let size = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-        if success && size >= expected.saturating_mul(98) / 100 {
-            fs::rename(&part, dest).map_err(|error| format!("无法保存模型文件：{error}"))?;
-            emit_progress(app, phase, expected, expected);
-            return Ok(());
+        if round + 1 < rounds {
+            emit_progress(app, phase, base + file_len(&part), pack_total);
+            std::thread::sleep(Duration::from_millis(1500));
         }
-        last_error = output
-            .and_then(|output| String::from_utf8(output.stderr).ok())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let _ = fs::remove_file(&part);
     }
 
     Err(format!(
-        "下载失败：{}",
+        "下载失败：{}。已下载的 {} 会保留，重试会从断点继续。",
         if last_error.is_empty() {
             "网络不可用或下载源拒绝连接".to_string()
         } else {
             last_error
-        }
+        },
+        human_bytes(file_len(&part))
     ))
 }
 
 #[cfg(windows)]
-fn extract_zip(app: &AppHandle, zip: &Path, dir: &Path, phase: &str) -> Result<(), String> {
+fn extract_zip(
+    app: &AppHandle,
+    zip: &Path,
+    dir: &Path,
+    phase: &str,
+    done: u64,
+    pack_total: u64,
+) -> Result<(), String> {
     use std::fs;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
     fs::create_dir_all(dir).map_err(|error| format!("无法创建组件目录：{error}"))?;
-    emit_progress(app, phase, 0, 1);
+    emit_progress(app, phase, done, pack_total);
     let status = Command::new("tar.exe")
         .arg("-xf")
         .arg(zip)
@@ -358,8 +416,22 @@ fn extract_zip(app: &AppHandle, zip: &Path, dir: &Path, phase: &str) -> Result<(
             return Err("组件压缩包解压失败，请重试".to_string());
         }
     }
-    emit_progress(app, phase, 1, 1);
+    emit_progress(app, phase, done, pack_total);
     Ok(())
+}
+
+#[cfg(windows)]
+fn human_bytes(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.2} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else {
+        format!("{} KB", (bytes / 1024).max(1))
+    }
 }
 
 #[cfg(windows)]
@@ -387,28 +459,65 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
 
     let dir = ai_dir(paths);
     fs::create_dir_all(&dir).map_err(|error| format!("无法创建 AI 目录：{error}"))?;
+    let mut base = 0u64;
 
     if llama_server_exe(paths).is_none() {
         let zip = dir.join("llama.zip");
-        download_asset(app, &[LLAMA_URL], &zip, LLAMA_BYTES, "llama")?;
-        extract_zip(app, &zip, &dir.join("llama"), "llama")?;
+        download_asset(app, &[LLAMA_URL], &zip, LLAMA_BYTES, "llama", base, PACK_BYTES)?;
+        extract_zip(
+            app,
+            &zip,
+            &dir.join("llama"),
+            "extract",
+            base + LLAMA_BYTES,
+            PACK_BYTES,
+        )?;
         let _ = fs::remove_file(&zip);
         if llama_server_exe(paths).is_none() {
             return Err("llama.cpp 组件解压后缺少 llama-server.exe".to_string());
         }
     }
+    base += LLAMA_BYTES;
+
     if whisper_cli_exe(paths).is_none() {
         let zip = dir.join("whisper.zip");
-        download_asset(app, &[WHISPER_URL], &zip, WHISPER_BYTES, "whisper")?;
-        extract_zip(app, &zip, &dir.join("whisper"), "whisper")?;
+        download_asset(
+            app,
+            &[WHISPER_URL],
+            &zip,
+            WHISPER_BYTES,
+            "whisper",
+            base,
+            PACK_BYTES,
+        )?;
+        extract_zip(
+            app,
+            &zip,
+            &dir.join("whisper"),
+            "extract",
+            base + WHISPER_BYTES,
+            PACK_BYTES,
+        )?;
         let _ = fs::remove_file(&zip);
         if whisper_cli_exe(paths).is_none() {
             return Err("whisper.cpp 组件解压后缺少 whisper-cli.exe".to_string());
         }
     }
+    base += WHISPER_BYTES;
+
     if !qwen_model(paths).is_file() {
-        download_asset(app, QWEN_URLS, &qwen_model(paths), QWEN_BYTES, "model")?;
+        download_asset(
+            app,
+            QWEN_URLS,
+            &qwen_model(paths),
+            QWEN_BYTES,
+            "model",
+            base,
+            PACK_BYTES,
+        )?;
     }
+    base += QWEN_BYTES;
+
     if !whisper_model(paths).is_file() {
         download_asset(
             app,
@@ -416,9 +525,11 @@ fn download_pack_inner(app: &AppHandle, paths: &Paths) -> Result<(), String> {
             &whisper_model(paths),
             WHISPER_MODEL_BYTES,
             "speech",
+            base,
+            PACK_BYTES,
         )?;
     }
-    emit_progress(app, "done", 1, 1);
+    emit_progress(app, "done", PACK_BYTES, PACK_BYTES);
     Ok(())
 }
 
