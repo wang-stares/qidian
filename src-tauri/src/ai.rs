@@ -176,20 +176,36 @@ fn whisper_model(paths: &Paths) -> PathBuf {
 }
 
 fn find_named(dir: &Path, names: &[&str], depth: u8) -> Option<PathBuf> {
+    // 按 names 的顺序优先级查找：whisper.cpp 的发布包里同时带有 whisper-cli.exe
+    // 与废弃的 main.exe（后者不链接 whisper.dll，启动即静默退出 1），
+    // 不能按目录枚举顺序取第一个命中项。
+    for wanted in names {
+        if let Some(found) = find_one(dir, wanted, depth) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_one(dir: &Path, wanted: &str, depth: u8) -> Option<PathBuf> {
     if depth == 0 || !dir.is_dir() {
         return None;
     }
     let entries = std::fs::read_dir(dir).ok()?;
+    let mut dirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if let Some(found) = find_named(&path, names, depth - 1) {
-                return Some(found);
-            }
+            dirs.push(path);
         } else if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
-            if names.iter().any(|wanted| name.eq_ignore_ascii_case(wanted)) {
+            if name.eq_ignore_ascii_case(wanted) {
                 return Some(path);
             }
+        }
+    }
+    for sub in dirs {
+        if let Some(found) = find_one(&sub, wanted, depth - 1) {
+            return Some(found);
         }
     }
     None
@@ -893,7 +909,7 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
         .arg("-otxt")
         .arg("-of")
         .arg(&prefix)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(0x0800_0000)
         .spawn()
@@ -901,6 +917,12 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
             let _ = fs::remove_file(&wav);
             format!("无法启动语音识别：{error}（组件可能缺少运行库，请重新下载本地 AI 组件）")
         })?;
+
+    // 必须在等待结束前并发读取管道，避免子进程写满缓冲区后卡死。
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || drain_pipe(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || drain_pipe(stderr_pipe));
 
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut timed_out = false;
@@ -918,46 +940,64 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
         std::thread::sleep(Duration::from_millis(120));
     }
     let status = child.wait().ok();
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        use std::io::Read;
-        let _ = pipe.read_to_string(&mut stderr);
-    }
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
 
-    let text = fs::read_to_string(prefix.with_extension("txt")).unwrap_or_default();
+    let text = fs::read_to_string(prefix.with_extension("txt"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let _ = fs::remove_file(&wav);
     let _ = fs::remove_file(prefix.with_extension("txt"));
     if timed_out {
         return Err("语音识别超时（90 秒），请缩短录音或换更短的句子重试".to_string());
     }
-    let detail = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .rev()
-        .take(2)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" / ");
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        let failed = status.map(|value| !value.success()).unwrap_or(false);
-        if failed {
-            let code = status
-                .and_then(|value| value.code())
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "未知".to_string());
-            return Err(format!(
-                "语音识别失败（退出码 {code}）{}",
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!("：{detail}")
-                }
-            ));
+    let detail = {
+        let source = if stderr.trim().is_empty() { &stdout } else { &stderr };
+        source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    let failed = status.map(|value| !value.success()).unwrap_or(true);
+    if failed {
+        let code = status
+            .and_then(|value| value.code())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "未知".to_string());
+        let log = ai_dir(paths).join("whisper-last.log");
+        let logged = fs::write(
+            &log,
+            format!(
+                "time: {}\nexe: {}\nmodel: {}\naudio: {}\nexit: {code}\n--- stderr ---\n{}\n--- stdout ---\n{}",
+                crate::store::now_millis(),
+                exe.display(),
+                model.display(),
+                wav.display(),
+                stderr.trim(),
+                stdout.trim()
+            ),
+        )
+        .is_ok();
+        let mut message = format!("语音识别失败（退出码 {code}）");
+        if !detail.is_empty() {
+            message.push_str(&format!("：{detail}"));
         }
+        if logged {
+            message.push_str(&format!("（诊断日志：{}）", log.display()));
+        } else if detail.is_empty() {
+            message.push_str("：语音组件没有任何输出，请重新下载本地 AI 组件");
+        }
+        return Err(message);
+    }
+    if text.is_empty() {
         return Err(format!(
             "没有识别到语音内容，请靠近麦克风重试{}",
             if detail.is_empty() {
@@ -968,6 +1008,15 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
         ));
     }
     Ok(text)
+}
+
+#[cfg(windows)]
+fn drain_pipe<T: std::io::Read>(pipe: Option<T>) -> String {
+    let mut text = String::new();
+    if let Some(mut pipe) = pipe {
+        let _ = std::io::Read::read_to_string(&mut pipe, &mut text);
+    }
+    text
 }
 
 #[cfg(not(windows))]
