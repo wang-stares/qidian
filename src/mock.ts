@@ -1368,6 +1368,20 @@ export function mockDnsStatus(): DnsStatus {
 
 export function mockDnsSet(preset: string): OptimizeOutcome {
   if (!mockOptReady()) throw new Error("系统优化模块尚未安装");
+  if (preset === "auto") {
+    try {
+      localStorage.removeItem(DNS_KEY);
+    } catch {
+      // 存储不可用时只在本次会话生效
+    }
+    return {
+      changed: [],
+      skipped: [],
+      message: "已将网络适配器的 DNS 恢复为自动获取（DHCP），原配置已备份，随时可还原",
+      elevated: true,
+      cancelled: false,
+    };
+  }
   const def = MOCK_DNS_PRESETS[preset];
   if (!def) {
     return {

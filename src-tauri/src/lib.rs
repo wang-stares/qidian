@@ -134,6 +134,17 @@ fn ai_transcribe(state: State<'_, AppState>, wav: String) -> Result<String, Stri
     ai::transcribe(&state.paths, &wav)
 }
 
+/// 让本地模型把应用归到已有分类；前端按批次调用，避免超出模型上下文。
+#[tauri::command]
+fn ai_classify_apps(
+    state: State<'_, AppState>,
+    ai: State<'_, ai::AiState>,
+    apps: serde_json::Value,
+    categories: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    ai::classify(&state.paths, &ai, apps, categories)
+}
+
 #[tauri::command]
 fn ai_remove(state: State<'_, AppState>, ai: State<'_, ai::AiState>) -> Result<(), String> {
     ai::remove(&state.paths, &ai)
@@ -1785,6 +1796,7 @@ pub fn run() {
             ai_stop,
             ai_chat,
             ai_transcribe,
+            ai_classify_apps,
             ai_remove,
             open_external,
             prune_missing_apps,

@@ -429,6 +429,30 @@ const mockBridge = {
     return "打开微信";
   },
 
+  async aiClassify(
+    apps: [string, string][],
+    categories: [string, string][],
+  ): Promise<{ assignments: { id: string; category: string }[]; skipped: number }> {
+    await sleep(360);
+    // 浏览器预览没有本地模型，用关键词粗略模拟一次分类结果。
+    const ids = new Set(categories.map(([id]) => id));
+    const rules: [RegExp, string][] = [
+      [/steam|game|游戏|epic/i, "game"],
+      [/code|studio|idea|vim|git|ide|dev/i, "dev"],
+      [/office|word|excel|ppt|wps|pdf/i, "office"],
+      [/chrome|edge|firefox|browser|浏览器/i, "network"],
+      [/qq|wechat|微信|feishu|飞书|mail|邮箱/i, "social"],
+    ];
+    const assignments = apps
+      .map(([id, name]) => {
+        const hit = rules.find(([pattern]) => pattern.test(name));
+        const category = hit && ids.has(hit[1]) ? hit[1] : ids.has("other") ? "other" : "";
+        return { id, category };
+      })
+      .filter((entry) => entry.category);
+    return { assignments, skipped: apps.length - assignments.length };
+  },
+
   async aiRemove(): Promise<void> {
     mockInstalledModel = null;
     mockAiRunning = false;
@@ -840,6 +864,13 @@ const tauriBridge = {
 
   aiTranscribe(wav: string): Promise<string> {
     return tauriInvoke<string>("ai_transcribe", { wav });
+  },
+
+  aiClassify(
+    apps: [string, string][],
+    categories: [string, string][],
+  ): Promise<{ assignments: { id: string; category: string }[]; skipped: number }> {
+    return tauriInvoke("ai_classify_apps", { apps, categories });
   },
 
   aiRemove(): Promise<void> {

@@ -233,6 +233,12 @@ interface UiState {
   aiProgress: AiProgress | null;
   aiError: string | null;
   aiRecording: boolean;
+  /** 录音已结束，正在本地转写文字。 */
+  aiTranscribing: boolean;
+  /** 模型正在为应用自动分类。 */
+  aiClassifyBusy: boolean;
+  aiClassifyTotal: number;
+  aiClassifyDone: number;
   aiSpeak: boolean;
   aiProcessGroups: ProcessGroup[];
   aiPendingClose: {
@@ -390,6 +396,10 @@ const state: UiState = {
   aiProgress: null,
   aiError: null,
   aiRecording: false,
+  aiTranscribing: false,
+  aiClassifyBusy: false,
+  aiClassifyTotal: 0,
+  aiClassifyDone: 0,
   aiSpeak: false,
   aiProcessGroups: [],
   aiPendingClose: null,
@@ -2880,9 +2890,13 @@ function aiPanel(): string {
       <textarea rows="1" data-ai-input placeholder="问点什么，或让启点打开某个应用…" ${
         state.aiBusy ? "disabled" : ""
       }>${escapeHtml(state.aiInput)}</textarea>
-      <button class="ai-mic${state.aiRecording ? " is-recording" : ""}" data-ai-action="mic" title="${
-        state.aiRecording ? "停止录音" : "语音输入"
-      }">${icon(state.aiRecording ? "stop" : "mic")}</button>
+      <button class="ai-mic${state.aiRecording ? " is-recording" : ""}${state.aiTranscribing ? " is-transcribing" : ""}" data-ai-action="mic" title="${
+        state.aiTranscribing ? "正在识别…" : state.aiRecording ? "停止录音" : "语音输入"
+      }" aria-label="${
+        state.aiTranscribing ? "正在识别语音" : state.aiRecording ? "停止录音" : "语音输入"
+      }"${state.aiTranscribing ? " disabled" : ""}>${icon(
+        state.aiTranscribing ? "refresh" : state.aiRecording ? "stop" : "mic",
+      )}</button>
       <button class="ai-send" data-ai-action="send" ${state.aiBusy ? "disabled" : ""}>${icon(
         "send",
       )}</button>
@@ -3473,15 +3487,26 @@ let aiStream: MediaStream | null = null;
 let aiChunks: Blob[] = [];
 
 async function toggleAiRecording(): Promise<void> {
+  if (state.aiTranscribing) return;
   if (state.aiRecording) {
     aiRecorder?.stop();
     return;
   }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    state.aiError = "当前 WebView2 不支持录音，请把 Microsoft Edge WebView2 运行时更新到最新版本";
+    refreshActive();
+    return;
+  }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
     aiStream = stream;
     aiChunks = [];
-    const recorder = new MediaRecorder(stream);
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find(
+      (candidate) => MediaRecorder.isTypeSupported?.(candidate),
+    );
+    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     aiRecorder = recorder;
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) aiChunks.push(event.data);
@@ -3490,24 +3515,30 @@ async function toggleAiRecording(): Promise<void> {
       state.aiRecording = false;
       aiStream?.getTracks().forEach((track) => track.stop());
       aiStream = null;
-      refreshActive();
       const blob = new Blob(aiChunks, { type: recorder.mimeType || "audio/webm" });
       aiChunks = [];
       if (blob.size < 2000) {
-        state.aiError = "录音太短，请按住说话";
+        state.aiError = "录音太短，请把话说完再点停止";
         refreshActive();
         return;
       }
+      state.aiTranscribing = true;
+      refreshActive();
       try {
         const wav = await blobToWavBase64(blob);
         const text = await api.aiTranscribe(wav);
         if (text.trim()) {
           state.aiInput = text.trim();
+          state.aiTranscribing = false;
           refreshActive();
           void sendAiMessage(text, true);
+          return;
         }
+        state.aiError = "没有识别到语音内容，请靠近麦克风重试";
       } catch (error) {
         state.aiError = String(error);
+      } finally {
+        state.aiTranscribing = false;
         refreshActive();
       }
     };
@@ -3518,6 +3549,70 @@ async function toggleAiRecording(): Promise<void> {
   } catch (error) {
     state.aiError =
       "无法访问麦克风，请在 Windows 隐私设置里允许启点使用麦克风：" + String(error);
+    refreshActive();
+  }
+}
+
+/** 让本地模型把未手动分类的应用归类，按 20 个一批调用后端。 */
+async function runAiClassifyApps(): Promise<void> {
+  if (state.aiClassifyBusy) return;
+  if (!state.aiInstalled) {
+    showToast("请先在「设置 › 插件」里安装本地 AI 助手", "info");
+    return;
+  }
+  const targets = visibleApps().filter((app) => !state.settings.overrides[app.id]);
+  if (targets.length === 0) {
+    showToast("所有应用都已手动归类，没有需要自动分类的项", "info");
+    return;
+  }
+  if (
+    !window.confirm(
+      `让本地模型为 ${targets.length} 个未手动归类的应用自动分类？首次会加载模型，可能需要几十秒。`,
+    )
+  ) {
+    return;
+  }
+  const categories: [string, string][] = state.settings.categories.map((category) => [
+    category.id,
+    category.name,
+  ]);
+  const overrides: Record<string, string> = { ...state.settings.overrides };
+  let applied = 0;
+  let skipped = 0;
+  state.aiClassifyBusy = true;
+  state.aiClassifyTotal = targets.length;
+  state.aiClassifyDone = 0;
+  refreshActive();
+  try {
+    const batchSize = 20;
+    for (let index = 0; index < targets.length; index += batchSize) {
+      const batch = targets.slice(index, index + batchSize);
+      const payload = batch.map(
+        (app) =>
+          [
+            app.id,
+            app.publisher ? `${app.name}（${app.publisher}）` : app.name,
+          ] as [string, string],
+      );
+      const result = await api.aiClassify(payload, categories);
+      for (const entry of result.assignments) {
+        if (categoryById(entry.category)) overrides[entry.id] = entry.category;
+      }
+      applied += result.assignments.length;
+      skipped += result.skipped;
+      state.aiClassifyDone = Math.min(targets.length, index + batch.length);
+      refreshActive();
+    }
+    patchSettings({ overrides });
+    showToast(
+      `已用模型归类 ${applied} 个应用${skipped > 0 ? `，${skipped} 个未能判断` : ""}`,
+      "success",
+    );
+  } catch (error) {
+    patchSettings({ overrides });
+    showToast(`自动分类失败：${String(error)}`, "error");
+  } finally {
+    state.aiClassifyBusy = false;
     refreshActive();
   }
 }
@@ -4188,6 +4283,24 @@ function scanPanel(): string {
         </div>
       </div>
       <p class="setting-desc" style="margin-top:8px;padding-left:4px">扫描读取开始菜单快捷方式、卸载注册表键值与 Store 应用清单；开启补充扫描时还会读取 Program Files 下 exe 的版本资源。不读取文件内容，也不发起网络请求。</p>
+    </div>
+    <div class="settings-section">
+      <h3 class="settings-section-title">AI 自动分类</h3>
+      <p class="settings-section-desc">让本地模型按应用名称与发布者归类；只处理没有手动调整过分类的应用，手动结果优先。</p>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">模型自动归类应用</div><div class="setting-desc">${
+            state.aiClassifyBusy
+              ? `正在处理 ${state.aiClassifyDone} / ${state.aiClassifyTotal} 个应用…`
+              : state.aiInstalled
+                ? "分类完全在本机完成，不联网；识别失败的应用保持原分类。"
+                : "需要先安装「本地 AI 助手」，安装后即可离线分类。"
+          }</div></div>
+          <div class="setting-control"><button class="ghost-btn" data-settings-action="ai-classify" data-focus-key="ai-classify"${
+            state.aiClassifyBusy ? " disabled" : ""
+          }>${state.aiClassifyBusy ? "分类中…" : "开始分类"}</button></div>
+        </div>
+      </div>
     </div>
     <div class="settings-section">
       <h3 class="settings-section-title">扫描来源</h3>
@@ -8966,6 +9079,10 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     }
     case "rescan": {
       void runScan(true);
+      return;
+    }
+    case "ai-classify": {
+      void runAiClassifyApps();
       return;
     }
     case "clear-cache": {

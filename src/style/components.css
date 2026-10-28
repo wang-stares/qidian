@@ -1981,16 +1981,16 @@
 .about-reward {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px;
+  gap: 18px;
+  padding: 18px;
 }
 
 .about-reward-img {
   flex: 0 0 auto;
-  width: 132px;
-  height: 132px;
+  width: 200px;
+  height: 200px;
   border: 1px solid var(--stroke);
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
 }
 
@@ -7546,6 +7546,17 @@ mark {
   background: rgba(224, 82, 82, 0.12);
   color: #e05252;
   animation: ai-recording 1.2s ease-in-out infinite;
+}
+
+.ai-mic.is-transcribing {
+  color: var(--accent);
+  animation: ai-transcribing 900ms linear infinite;
+}
+
+@keyframes ai-transcribing {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .ai-send {

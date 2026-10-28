@@ -809,11 +809,16 @@ fn http_post(body: &str) -> Result<String, String> {
 
 #[cfg(windows)]
 pub fn chat(messages: Value, tools: Value) -> Result<Value, String> {
+    chat_with_limit(messages, tools, 512)
+}
+
+#[cfg(windows)]
+fn chat_with_limit(messages: Value, tools: Value, max_tokens: u64) -> Result<Value, String> {
     let mut body = serde_json::json!({
         "model": "qwen2.5-1.5b-instruct",
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
         "stream": false,
     });
     // 所有工具都被用户关闭时不发送 tools，避免模型继续尝试函数调用。
@@ -857,8 +862,13 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    let exe = whisper_cli_exe(paths).ok_or_else(|| "语音组件尚未安装".to_string())?;
+    let exe = whisper_cli_exe(paths).ok_or_else(|| {
+        "语音组件尚未安装：请到「设置 › 插件 › 本地 AI 助手」重新下载组件".to_string()
+    })?;
     let model = whisper_model(paths);
+    if !model.is_file() {
+        return Err("语音模型尚未下载：请到「设置 › 插件 › 本地 AI 助手」重新下载组件".to_string());
+    }
     let bytes = STANDARD
         .decode(wav_base64)
         .map_err(|error| format!("音频解码失败：{error}"))?;
@@ -884,36 +894,195 @@ pub fn transcribe(paths: &Paths, wav_base64: &str) -> Result<String, String> {
         .arg("-of")
         .arg(&prefix)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(0x0800_0000)
         .spawn()
-        .map_err(|error| format!("无法启动语音识别：{error}"))?;
+        .map_err(|error| {
+            let _ = fs::remove_file(&wav);
+            format!("无法启动语音识别：{error}（组件可能缺少运行库，请重新下载本地 AI 组件）")
+        })?;
 
     let deadline = Instant::now() + Duration::from_secs(90);
+    let mut timed_out = false;
     loop {
-        if let Ok(Some(_)) = child.try_wait() {
-            break;
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(_) => break,
         }
         if Instant::now() >= deadline {
+            timed_out = true;
             let _ = child.kill();
-            let _ = child.wait();
             break;
         }
         std::thread::sleep(Duration::from_millis(120));
+    }
+    let status = child.wait().ok();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        use std::io::Read;
+        let _ = pipe.read_to_string(&mut stderr);
     }
 
     let text = fs::read_to_string(prefix.with_extension("txt")).unwrap_or_default();
     let _ = fs::remove_file(&wav);
     let _ = fs::remove_file(prefix.with_extension("txt"));
+    if timed_out {
+        return Err("语音识别超时（90 秒），请缩短录音或换更短的句子重试".to_string());
+    }
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" / ");
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err("没有识别到语音内容，请靠近麦克风重试".to_string());
+        let failed = status.map(|value| !value.success()).unwrap_or(false);
+        if failed {
+            let code = status
+                .and_then(|value| value.code())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "未知".to_string());
+            return Err(format!(
+                "语音识别失败（退出码 {code}）{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!("：{detail}")
+                }
+            ));
+        }
+        return Err(format!(
+            "没有识别到语音内容，请靠近麦克风重试{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!("（{detail}）")
+            }
+        ));
     }
     Ok(text)
 }
 
 #[cfg(not(windows))]
 pub fn transcribe(_paths: &Paths, _wav_base64: &str) -> Result<String, String> {
+    Err("AI 助手仅支持 Windows".to_string())
+}
+
+/* ── 应用自动分类 ──────────────────────────────────────────── */
+
+/// 从模型输出里挑出合法的 JSON 数组，容忍代码块、前后说明文字。
+#[cfg(windows)]
+fn extract_json_array(text: &str) -> Option<&str> {
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    Some(&text[start..=end])
+}
+
+#[cfg(windows)]
+fn collect_ids(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| item.get(0).and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 让本地模型把应用归到已有分类，返回 `{ assignments, skipped }`。
+/// `apps` 与 `categories` 都是 `[[id, 名称]]`，由前端分批调用。
+#[cfg(windows)]
+pub fn classify(
+    paths: &Paths,
+    state: &AiState,
+    apps: serde_json::Value,
+    categories: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let items = apps.as_array().cloned().unwrap_or_default();
+    let cats = categories.as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Ok(serde_json::json!({ "assignments": [], "skipped": 0 }));
+    }
+    if cats.is_empty() {
+        return Err("没有可用分类".to_string());
+    }
+    start(paths, state)?;
+
+    let cat_lines = cats
+        .iter()
+        .filter_map(|cat| {
+            let id = cat.get(0).and_then(|value| value.as_str())?;
+            let label = cat.get(1).and_then(|value| value.as_str()).unwrap_or(id);
+            Some(format!("{id} = {label}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let app_lines = items
+        .iter()
+        .filter_map(|app| {
+            let id = app.get(0).and_then(|value| value.as_str())?;
+            let name = app.get(1).and_then(|value| value.as_str()).unwrap_or_default();
+            Some(format!("{id}\t{name}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let system = format!(
+        "你是 Windows 应用分类助手。可用分类如下：\n{cat_lines}\n\
+         规则：\n\
+         1. category 只能取上面列出的分类 id；\n\
+         2. 每个应用都要给出结果，确实无法判断时优先用 other；\n\
+         3. 参考应用名称里的厂商、用途关键词（如 Steam、Driver、Player、IDE）；\n\
+         4. 只输出 JSON 数组，不要解释、不要 markdown 代码块。\n\
+         格式：[{{\"id\":\"应用id\",\"category\":\"分类id\"}}]"
+    );
+    let messages = serde_json::json!([
+        { "role": "system", "content": system },
+        { "role": "user", "content": format!("应用列表（id\\t名称）：\n{app_lines}") }
+    ]);
+    let reply = chat_with_limit(messages, serde_json::json!([]), 1024)?;
+    let text = reply
+        .get("content")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+
+    let valid_cats = collect_ids(&cats);
+    let valid_apps = collect_ids(&items);
+    let parsed: Vec<serde_json::Value> = extract_json_array(text)
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    let mut assignments = Vec::new();
+    for entry in parsed {
+        let Some(id) = entry.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(category) = entry.get("category").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if !valid_apps.iter().any(|app| app == id) || !valid_cats.iter().any(|cat| cat == category) {
+            continue;
+        }
+        assignments.push(serde_json::json!({ "id": id, "category": category }));
+    }
+    let skipped = items.len().saturating_sub(assignments.len());
+    Ok(serde_json::json!({ "assignments": assignments, "skipped": skipped }))
+}
+
+#[cfg(not(windows))]
+pub fn classify(
+    _paths: &Paths,
+    _state: &AiState,
+    _apps: serde_json::Value,
+    _categories: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     Err("AI 助手仅支持 Windows".to_string())
 }
 

@@ -193,12 +193,14 @@ pub fn dns_status(base: &Path) -> Result<DnsStatus, String> {
     }
 }
 
-/// 把当前 DNS 配置以指定预设覆盖。需要管理员权限，由提权分支调用。
-/// 应用前先把接口原始配置写入备份文件，供 `restore_dns` 还原。
+/// 把当前 DNS 配置以指定预设覆盖，`auto` 表示恢复为 DHCP 自动获取。
+/// 需要管理员权限，由提权分支调用；应用前先把接口原始配置写入备份文件，
+/// 供 `restore_dns` 还原。
 pub fn apply_dns(base: &Path, preset: &str) -> Result<String, String> {
-    let Some(def) = DNS_PRESETS.iter().find(|p| p.id == preset) else {
+    let reset = preset == "auto";
+    if !reset && !DNS_PRESETS.iter().any(|item| item.id == preset) {
         return Err(format!("未知的 DNS 预设：{preset}"));
-    };
+    }
     #[cfg(windows)]
     {
         let interfaces = read_interfaces()?;
@@ -210,15 +212,20 @@ pub fn apply_dns(base: &Path, preset: &str) -> Result<String, String> {
         let data = serde_json::to_vec_pretty(&backup).map_err(|e| e.to_string())?;
         fs::write(backup_path(base), data).map_err(|e| format!("无法保存 DNS 备份：{e}"))?;
 
+        let def = DNS_PRESETS.iter().find(|item| item.id == preset);
         let mut changed = 0usize;
         let mut failed: Vec<String> = Vec::new();
         for iface in &interfaces {
+            let action = match def {
+                Some(item) => format!("-ServerAddresses ('{}','{}')", item.primary, item.secondary),
+                None => "-ResetServerAddresses".to_string(),
+            };
             let script = format!(
                 "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
                 $ErrorActionPreference='Stop'; \
-                try {{ Set-DnsClientServerAddress -InterfaceIndex {} -ServerAddresses ('{}','{}') -ErrorAction Stop; '[OK]' }} \
+                try {{ Set-DnsClientServerAddress -InterfaceIndex {} {action} -ErrorAction Stop; '[OK]' }} \
                 catch {{ '[ERR] ' + $_.Exception.Message }}",
-                iface.index, def.primary, def.secondary
+                iface.index
             );
             match run_ps(&script) {
                 Ok(output) if ps_error(&output).is_none() => changed += 1,
@@ -235,17 +242,20 @@ pub fn apply_dns(base: &Path, preset: &str) -> Result<String, String> {
                 failed.join("；")
             ));
         }
-        Ok(format!(
-            "已将 {} 个接口的 DNS 切换到{}（{}/{}），原配置已备份，随时可还原",
-            changed,
-            def.name,
-            def.primary,
-            def.secondary
-        ))
+        match def {
+            Some(item) => Ok(format!(
+                "已将 {} 个接口的 DNS 切换到{}（{}/{}），原配置已备份，随时可还原",
+                changed, item.name, item.primary, item.secondary
+            )),
+            None => Ok(format!(
+                "已将 {} 个接口的 DNS 恢复为自动获取（DHCP），原配置已备份，随时可还原",
+                changed
+            )),
+        }
     }
     #[cfg(not(windows))]
     {
-        let _ = (base, def);
+        let _ = (base, preset, reset);
         Err("网络优化目前只支持 Windows".to_string())
     }
 }
