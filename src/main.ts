@@ -468,6 +468,7 @@ const SOURCE_LABELS: Record<AppEntry["source"], string> = {
   appPaths: "App Paths",
   registry: "注册表",
   uwp: "Microsoft Store",
+  appsFolder: "开始菜单索引",
 };
 
 const APP_VERSION = __APP_VERSION__;

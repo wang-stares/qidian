@@ -3,6 +3,21 @@
 版本号遵循语义化版本（SemVer），更新公告格式参考 Keep a Changelog。
 每次发布前必须在本文件补充当前版本的条目；`npm run build` 会校验版本号与公告是否一致。
 
+## [1.4.0] - 2026-10-28
+
+### 新增
+
+- **扫描来源补齐（参考 Windows 开始菜单 / 任务栏搜索的实现）**：
+  - 接入 `shell:AppsFolder`（`Get-StartApps`）：这是开始菜单与任务栏搜索使用的同一份应用清单，能覆盖没有开始菜单快捷方式的桌面应用与 MSIX 应用；UWP 仍按 AUMID 启动，桌面条目自动解析为 `.lnk` 或 `.exe`；
+  - 新增 `RegisteredApplications`（系统「默认应用」注册表）扫描，补上只在系统设置里登记、既没有快捷方式也不在 App Paths 中的应用；
+  - 修正中文通用词过滤：`文档`、`帮助`、`更新` 等只在词首 / 词尾匹配，避免把「WPS Office 文档」这类正常应用名误删；
+  - 扫描缓存版本 7 → 8，升级后自动重扫一次。
+- 参考的开源实现：PowerToys Run（Program / UWP 分源索引）、Flow Launcher（Start Menu + PackageManager）、Wox（Get-StartApps 兜底）。
+
+### 修复
+
+- 部分应用（如小米互联服务）只出现在 Windows 开始菜单与搜索里，却没有开始菜单快捷方式或卸载注册表记录，之前会整条漏扫。
+
 ## [1.3.1] - 2026-10-28
 
 ### 优化

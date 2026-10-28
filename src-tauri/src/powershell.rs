@@ -2,6 +2,13 @@
 /// 仅用于按需枚举（Microsoft Store 应用、运行中进程），不做后台轮询。
 #[cfg(windows)]
 pub fn run_encoded(script: &str) -> Option<Vec<u8>> {
+    run_encoded_with_timeout(script, 15)
+}
+
+/// 与 [`run_encoded`] 相同，可指定超时；开始菜单清单在冷启动或杀软扫描时
+/// 可能超过 15 秒，需要更宽松的上限。
+#[cfg(windows)]
+pub fn run_encoded_with_timeout(script: &str, seconds: u64) -> Option<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -32,7 +39,7 @@ pub fn run_encoded(script: &str) -> Option<Vec<u8>> {
         .spawn()
         .ok()?;
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,

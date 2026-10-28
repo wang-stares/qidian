@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 7;
+pub const CACHE_SCHEMA: u32 = 8;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -67,17 +67,43 @@ fn scan_windows(
     merge_registry(&mut accumulator, registry);
     emit_progress(app, "registry", accumulator.entries.len(), 0.7);
 
-    let has_uwp = !uwp.is_empty();
-    for (name, aumid) in uwp {
-        if name.is_empty() || aumid.is_empty() || is_junk_name(&name) {
+    let has_uwp = uwp.iter().any(|(_, app_id)| app_id.contains('!'));
+    for (name, app_id) in uwp {
+        if name.is_empty() || app_id.is_empty() || is_junk_name(&name) {
             continue;
         }
-        let category = classify(&name, "", &aumid);
+        // AppsFolder 是 Windows 开始菜单的权威列表：UWP 用 AUMID，
+        // 桌面应用的 AppID 则是开始菜单 .lnk 的完整路径。
+        let is_uwp = app_id.contains('!');
+        let lower = app_id.to_lowercase();
+        let target = if is_uwp {
+            LaunchTarget::Uwp {
+                aumid: app_id.clone(),
+            }
+        } else if lower.ends_with(".lnk") && Path::new(&app_id).is_file() {
+            LaunchTarget::Shortcut {
+                path: app_id.clone(),
+            }
+        } else if lower.ends_with(".exe") && Path::new(&app_id).is_file() {
+            LaunchTarget::Executable {
+                path: app_id.clone(),
+                args: None,
+                workdir: None,
+            }
+        } else {
+            // 无法确认是文件路径的桌面规范名不加入，避免出现看得见却点不开的条目。
+            continue;
+        };
+        let category = classify(&name, "", &app_id);
         accumulator.push(
             &name,
             category,
-            AppSource::Uwp,
-            LaunchTarget::Uwp { aumid },
+            if is_uwp {
+                AppSource::Uwp
+            } else {
+                AppSource::AppsFolder
+            },
+            target,
             None,
             None,
             None,
@@ -915,6 +941,96 @@ fn collect_registry() -> Vec<RegistryApp> {
         }
     }
     result.extend(collect_app_paths());
+    result.extend(collect_registered_apps());
+    result
+}
+
+/// 读取 systemsettings 的「默认应用」注册表：
+/// `RegisteredApplications → <Capabilities>\Applications\<exe>`。
+/// 这类应用可能既没有开始菜单快捷方式，也不在 App Paths 中。
+#[cfg(windows)]
+fn collect_registered_apps() -> Vec<RegistryApp> {
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+    use winreg::RegKey;
+
+    const REGISTERED: &str = r"SOFTWARE\RegisteredApplications";
+    let sources = [
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_64KEY),
+        (HKEY_LOCAL_MACHINE, KEY_READ | KEY_WOW64_32KEY),
+        (HKEY_CURRENT_USER, KEY_READ),
+    ];
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (root, flags) in sources {
+        let Ok(key) = RegKey::predef(root).open_subkey_with_flags(REGISTERED, flags) else {
+            continue;
+        };
+        let capabilities: Vec<String> = key
+            .enum_values()
+            .filter_map(|value| value.ok())
+            .filter_map(|(_, value)| String::from_utf8(value.bytes.to_vec()).ok())
+            .collect();
+        for path in capabilities {
+            let path = path.trim();
+            if path.is_empty() {
+                continue;
+            }
+            let Ok(apps) =
+                RegKey::predef(root).open_subkey_with_flags(format!(r"{path}\Applications"), flags)
+            else {
+                continue;
+            };
+            let Ok(subkeys) = apps.enum_keys().collect::<Result<Vec<_>, _>>() else {
+                continue;
+            };
+            for subkey in subkeys {
+                let Ok(entry) = apps.open_subkey(&subkey) else {
+                    continue;
+                };
+                let display = entry
+                    .get_value::<String, _>("ApplicationName")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| {
+                        Path::new(&subkey)
+                            .file_stem()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or(&subkey)
+                            .to_string()
+                    });
+                if display.is_empty() || is_junk_name(&display) {
+                    continue;
+                }
+                let Some(exe) = entry
+                    .get_value::<String, _>("ApplicationIcon")
+                    .ok()
+                    .and_then(|raw| display_icon_to_exe(&raw))
+                else {
+                    continue;
+                };
+                if is_uninstaller_path(&exe) || is_windows_alias_path(&exe) {
+                    continue;
+                }
+                if !seen.insert(exe.to_lowercase()) {
+                    continue;
+                }
+                let install_location = Path::new(&exe)
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().to_string());
+                result.push(RegistryApp {
+                    name: display,
+                    source: AppSource::Registry,
+                    publisher: None,
+                    version: None,
+                    install_location,
+                    exe: Some(exe),
+                });
+            }
+        }
+    }
     result
 }
 
@@ -1108,11 +1224,24 @@ fn merge_registry(accumulator: &mut Accumulator, registry: Vec<RegistryApp>) {
 
 #[cfg(windows)]
 fn collect_uwp(include_system: bool) -> Vec<(String, String)> {
+    // Get-StartApps 读取的就是 shell:AppsFolder（Windows 开始菜单 / 任务栏搜索
+    // 使用的同一份应用清单），包含 UWP 与桌面应用，比只扫快捷方式更完整。
     let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
         $ProgressPreference='SilentlyContinue'; \
-        $apps = Get-StartApps | Where-Object { $_.AppID -like '*!*' } | Select-Object Name, AppID; \
+        $apps = Get-StartApps | Select-Object Name, AppID; \
         @($apps) | ConvertTo-Json -Compress";
-    let Some(stdout) = crate::powershell::run_encoded(script) else {
+    // 冷启动的 PowerShell 或杀软扫描可能超过 15 秒；超时后再给一次机会，
+    // 避免整份开始菜单清单被静默丢弃（表现为 Store / MSIX 应用全部漏扫）。
+    let mut stdout = crate::powershell::run_encoded_with_timeout(script, 25);
+    let empty = |bytes: &Option<Vec<u8>>| {
+        bytes
+            .as_ref()
+            .map_or(true, |value| value.iter().all(|byte| byte.is_ascii_whitespace()))
+    };
+    if empty(&stdout) {
+        stdout = crate::powershell::run_encoded_with_timeout(script, 25);
+    }
+    let Some(stdout) = stdout else {
         return Vec::new();
     };
     let value: serde_json::Value =
@@ -1136,7 +1265,8 @@ fn collect_uwp(include_system: bool) -> Vec<(String, String)> {
         if name.is_empty() || aumid.is_empty() || is_junk_name(name) {
             continue;
         }
-        if !include_system && is_system_uwp(name) {
+        // 系统内置 UWP 只在勾选「显示系统应用」时保留；桌面条目不受此过滤。
+        if aumid.contains('!') && !include_system && is_system_uwp(name) {
             continue;
         }
         result.push((name.to_string(), aumid.to_string()));
@@ -1161,6 +1291,7 @@ fn source_key(source: AppSource) -> &'static str {
         AppSource::AppPaths => "apppath",
         AppSource::Registry => "reg",
         AppSource::Uwp => "uwp",
+        AppSource::AppsFolder => "appsfolder",
     }
 }
 
@@ -1601,7 +1732,6 @@ fn is_junk_name(name: &str) -> bool {
         "release notes",
         "changelog",
         "documentation",
-        "文档",
         "modify",
         "删除",
     ];
@@ -1609,8 +1739,15 @@ fn is_junk_name(name: &str) -> bool {
         || lower.starts_with("uninstall ")
         || lower.starts_with("unins")
         || lower.starts_with("卸载");
-    JUNK.iter().any(|word| lower.contains(word))
-        || uninstall_like
+    JUNK.iter().any(|word| {
+        // 中文词只在词首 / 词尾出现时过滤，避免「WPS Office 文档」这类
+        // 正常应用名因为包含通用词被误删。
+        if word.chars().any(|character| !character.is_ascii()) {
+            lower == *word || lower.starts_with(word) || lower.ends_with(word)
+        } else {
+            lower.contains(word)
+        }
+    }) || uninstall_like
         || lower.starts_with('~')
         || lower.contains("update for")
         || lower.contains("security update")
@@ -1811,5 +1948,16 @@ mod tests {
         assert!(!is_junk_name("Revo Uninstaller"));
         assert!(is_junk_name("Uninstall Steam"));
         assert!(is_junk_name("卸载 微信"));
+    }
+
+    #[test]
+    fn chinese_junk_words_do_not_swallow_real_apps() {
+        // 中文通用词只在词首 / 词尾匹配，避免误删包含这些字的正常应用名。
+        assert!(is_junk_name("帮助"));
+        assert!(is_junk_name("帮助中心"));
+        assert!(is_junk_name("Windows 更新"));
+        assert!(!is_junk_name("WPS Office 文档"));
+        assert!(!is_junk_name("小米互联服务"));
+        assert!(is_junk_name("更新助手"));
     }
 }

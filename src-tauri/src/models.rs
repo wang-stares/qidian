@@ -9,6 +9,9 @@ pub enum AppSource {
     AppPaths,
     Registry,
     Uwp,
+    /// 来自 shell:AppsFolder 的应用入口（Windows 开始菜单的权威列表，
+    /// 覆盖没有开始菜单快捷方式的 MSIX / 注册应用）。
+    AppsFolder,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
