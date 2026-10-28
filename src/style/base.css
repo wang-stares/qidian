@@ -267,8 +267,7 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
 .brand-mark {
   width: 21px;
   height: 21px;
-  color: var(--accent);
-  filter: drop-shadow(0 3px 8px var(--accent-glow));
+  filter: drop-shadow(0 2px 6px rgba(20, 22, 26, 0.18));
 }
 
 .brand-name {

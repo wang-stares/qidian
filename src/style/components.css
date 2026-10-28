@@ -1954,8 +1954,7 @@
   flex: 0 0 auto;
   width: 48px;
   height: 48px;
-  color: var(--accent);
-  filter: drop-shadow(0 8px 18px var(--accent-glow));
+  filter: drop-shadow(0 10px 22px rgba(20, 22, 26, 0.2));
 }
 
 .about-logo svg {
@@ -6801,9 +6800,8 @@ mark {
 }
 
 [data-theme="mono"] .brand-mark {
-  width: 16px;
-  height: 16px;
-  color: var(--text);
+  width: 18px;
+  height: 18px;
   filter: none;
 }
 
