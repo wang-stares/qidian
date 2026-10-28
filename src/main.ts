@@ -469,6 +469,7 @@ const SOURCE_LABELS: Record<AppEntry["source"], string> = {
   registry: "注册表",
   uwp: "Microsoft Store",
   appsFolder: "开始菜单索引",
+  installDir: "安装目录",
 };
 
 const APP_VERSION = __APP_VERSION__;
@@ -2863,6 +2864,12 @@ function scanPanel(): string {
           }" data-settings-action="toggle" data-key="includeSystemApps" data-focus-key="toggle-includeSystemApps" aria-label="显示系统内置应用"></button></div>
         </div>
         <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">安装目录补充扫描</div><div class="setting-desc">额外扫描 Program Files 与 LocalAppData\Programs，找回没有快捷方式和注册表记录的绿色软件；只收录带版本信息的主程序，首次扫描会稍慢。</div></div>
+          <div class="setting-control"><button class="switch" role="switch" aria-checked="${
+            state.settings.scanInstallDirs
+          }" data-settings-action="toggle" data-key="scanInstallDirs" data-focus-key="toggle-scanInstallDirs" aria-label="安装目录补充扫描"></button></div>
+        </div>
+        <div class="setting-row">
           <div class="setting-copy"><div class="setting-title">自动刷新索引</div><div class="setting-desc">每次打开时检查缓存年龄；超过间隔就在后台重新扫描，不常驻后台。</div></div>
           <div class="setting-control"><div class="chips">${REFRESH_OPTIONS.map(
             (option) =>
@@ -2884,7 +2891,7 @@ function scanPanel(): string {
           <div class="setting-control"><button class="ghost-btn" data-settings-action="clear-cache">清除缓存</button></div>
         </div>
       </div>
-      <p class="setting-desc" style="margin-top:8px;padding-left:4px">扫描只读取开始菜单快捷方式、卸载注册表键值与 Store 应用清单，不读取文件内容，也不发起网络请求。</p>
+      <p class="setting-desc" style="margin-top:8px;padding-left:4px">扫描读取开始菜单快捷方式、卸载注册表键值与 Store 应用清单；开启补充扫描时还会读取 Program Files 下 exe 的版本资源。不读取文件内容，也不发起网络请求。</p>
     </div>
     ${hiddenHtml}
     <div class="settings-section">
@@ -7515,6 +7522,9 @@ async function onModalClick(event: MouseEvent): Promise<void> {
         void saveChain.then(() => runScan(true, true));
       } else if (key === "includeSystemApps") {
         patchSettings({ includeSystemApps: !state.settings.includeSystemApps });
+        void saveChain.then(() => runScan(true, true));
+      } else if (key === "scanInstallDirs") {
+        patchSettings({ scanInstallDirs: !state.settings.scanInstallDirs });
         void saveChain.then(() => runScan(true, true));
       }
       return;

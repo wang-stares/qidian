@@ -3,6 +3,19 @@
 版本号遵循语义化版本（SemVer），更新公告格式参考 Keep a Changelog。
 每次发布前必须在本文件补充当前版本的条目；`npm run build` 会校验版本号与公告是否一致。
 
+## [1.4.4] - 2026-10-28
+
+### 新增
+
+- **快捷方式不再只认 `.lnk`**：开始菜单 / 桌面里的 ClickOnce 应用（`.appref-ms`）与 Steam、Epic 等游戏启动协议（`.url`）也会被收录并直接交给 Shell 启动；网页书签（http/https/mailto）仍然跳过，不污染应用列表。
+- **安装目录补充扫描（设置 › 扫描 › 安装目录补充扫描，默认关闭）**：扫描 `Program Files`、`Program Files (x86)`、`LocalAppData\Programs`，读取 exe 版本资源里的 ProductName 作为显示名，找回没有快捷方式和注册表记录的绿色软件；过滤卸载器、更新器、运行时、帮助程序、控制台程序与过小的组件，单次最多补充 160 条。
+
+### 修复
+
+- 卸载注册表条目缺少 `DisplayIcon` 时，改为直接从 `InstallLocation` 反推主程序，不再整条丢弃。
+- `DisplayIcon` 指向 `WindowsApps` 时不再因 ACL 导致 `is_file()` 失败而丢弃（MSIX / Store 版 Win32 应用）。
+- 扫描缓存版本 10 → 11，升级后自动重扫一次。
+
 ## [1.4.3] - 2026-10-28
 
 ### 新增

@@ -143,6 +143,7 @@ export const DEFAULT_SETTINGS: Settings = {
   lowPower: false,
   scanUwp: true,
   includeSystemApps: false,
+  scanInstallDirs: false,
   autoRefreshHours: 12,
   memoryMode: "auto",
   memoryLevel: "normal",

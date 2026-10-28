@@ -163,6 +163,7 @@ async fn scan_apps(
             ScanOptions {
                 scan_uwp: settings.scan_uwp,
                 include_system_apps: settings.include_system_apps,
+                scan_install_dirs: settings.scan_install_dirs,
             },
             settings.auto_refresh_hours,
         )

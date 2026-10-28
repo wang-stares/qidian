@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 10;
+pub const CACHE_SCHEMA: u32 = 11;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -47,11 +47,13 @@ fn scan_windows(
     let mut accumulator = Accumulator::default();
     let scan_uwp = options.scan_uwp;
     let include_system = options.include_system_apps;
+    let scan_install_dirs = options.scan_install_dirs;
 
     emit_progress(app, "shortcuts", 0, 0.04);
     let shortcuts = collect_shortcuts();
-    // 快捷方式解析、卸载注册表与 Store 应用三路并行，扫描耗时从相加变成取最大值。
-    let (shortcut_count, registry, uwp) = std::thread::scope(|scope| {
+    // 快捷方式解析、卸载注册表、Store 应用与安装目录补扫并行，
+    // 扫描耗时从相加变成取最大值。
+    let (shortcut_count, registry, uwp, install) = std::thread::scope(|scope| {
         let registry_handle = scope.spawn(collect_registry);
         let uwp_handle = scan_uwp.then(|| {
             scope.spawn(move || {
@@ -68,16 +70,21 @@ fn scan_windows(
                 apps
             })
         });
+        let install_handle = scan_install_dirs.then(|| scope.spawn(collect_install_dir_apps));
         let shortcut_count = push_shortcuts(&mut accumulator, &shortcuts);
         let registry = registry_handle.join().unwrap_or_default();
         let uwp = uwp_handle
             .map(|handle| handle.join().unwrap_or_default())
             .unwrap_or_default();
-        (shortcut_count, registry, uwp)
+        let install = install_handle
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default();
+        (shortcut_count, registry, uwp, install)
     });
     emit_progress(app, "shortcuts", shortcut_count, 0.35);
 
     merge_registry(&mut accumulator, registry);
+    merge_install_dir(&mut accumulator, install);
     emit_progress(app, "registry", accumulator.entries.len(), 0.7);
 
     let has_uwp = uwp.iter().any(|(_, app_id)| app_id.contains('!'));
@@ -425,9 +432,14 @@ fn walk_shortcut_files(
         let extension = path
             .extension()
             .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if !extension.eq_ignore_ascii_case("lnk") {
-            continue;
+            .unwrap_or_default()
+            .to_lowercase();
+        // ClickOnce 用 .appref-ms、Steam / Epic 等游戏用 .url 应用协议注册，
+        // 两者都不是 .lnk，但同样由 Shell 直接激活。
+        if extension != "lnk" && extension != "appref-ms" {
+            if extension != "url" || !url_shortcut_is_app(&path) {
+                continue;
+            }
         }
         let path_text = path.to_string_lossy().to_string();
         if skip_startup && path_text.to_lowercase().contains(r"\startup\") {
@@ -473,7 +485,17 @@ fn push_shortcuts(
                     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
                 let items = chunk
                     .iter()
-                    .map(|candidate| (candidate, resolve_shortcut(&candidate.path, &candidate.name)))
+                    .map(|candidate| {
+                        // .appref-ms / .url 不是快捷方式二进制，无法用 IShellLink
+                        // 解析，保留原文件由 Shell 激活即可。
+                        let lower = candidate.path.to_lowercase();
+                        let target = if lower.ends_with(".appref-ms") || lower.ends_with(".url") {
+                            ShortcutTarget::Unresolved
+                        } else {
+                            resolve_shortcut(&candidate.path, &candidate.name)
+                        };
+                        (candidate, target)
+                    })
                     .collect::<Vec<_>>();
                 if initialized {
                     unsafe { CoUninitialize() };
@@ -518,6 +540,37 @@ fn push_shortcuts(
         }
     }
     count
+}
+
+/// 读取 `.url`（Internet Shortcut）里的协议，判断它是不是应用启动器。
+#[cfg(windows)]
+fn url_shortcut_is_app(path: &Path) -> bool {
+    std::fs::read(path)
+        .map(|bytes| app_protocol_url(&String::from_utf8_lossy(&bytes)))
+        .unwrap_or(false)
+}
+
+/// Steam / Epic / Ubisoft 等启动器用 `steam:`、`com.epicgames.launcher:`
+/// 这类应用协议注册游戏；`http(s)`、`ftp`、`mailto` 只是网页书签，不算应用。
+#[cfg(any(windows, test))]
+fn app_protocol_url(content: &str) -> bool {
+    let url = content.lines().find_map(|line| {
+        let line = line.trim();
+        line.strip_prefix("URL=")
+            .or_else(|| line.strip_prefix("url="))
+            .map(str::trim)
+    });
+    let Some(url) = url else {
+        return false;
+    };
+    let lower = url.to_lowercase();
+    if ["http:", "https:", "ftp:", "ftps:", "mailto:", "file:", "javascript:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+    {
+        return false;
+    }
+    lower.contains(':')
 }
 
 /// 桌面与开始菜单里可能混入文档、文件夹快捷方式，只接受可执行目标。
@@ -944,7 +997,9 @@ fn collect_registry() -> Vec<RegistryApp> {
             if exe.as_ref().is_some_and(|path| is_uninstaller_path(path)) {
                 exe = None;
             }
-            if exe.is_none() && icon_exe.is_some() {
+            // 没有 DisplayIcon 的条目（常见于 Store 版 Win32 应用、只登记安装
+            // 目录的管家类软件）也要就近找主程序，否则整条应用会被丢弃。
+            if exe.is_none() {
                 exe = candidate_install_dirs(install_location.as_deref(), icon_exe.as_deref())
                     .into_iter()
                     .find_map(|dir| {
@@ -1242,6 +1297,327 @@ fn merge_registry(accumulator: &mut Accumulator, registry: Vec<RegistryApp>) {
     }
 }
 
+/// 安装目录补扫（可选来源）：只存在于 Program Files 里、既没有开始菜单
+/// 快捷方式也没有卸载注册表记录的程序，只能靠扫描 exe 再读版本资源找到。
+#[cfg(windows)]
+fn collect_install_dir_apps() -> Vec<RegistryApp> {
+    let roots = install_roots();
+    let scanned: Vec<Vec<(PathBuf, u64)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = roots
+            .into_iter()
+            .map(|root| {
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    collect_dir_executables(&root, 3, 6000, &mut out);
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    });
+
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for (path, size) in scanned.into_iter().flatten() {
+        if result.len() >= 160 {
+            break;
+        }
+        let path_text = path.to_string_lossy().to_string();
+        let lower_path = path_text.to_lowercase();
+        if is_install_dir_auxiliary_path(&lower_path) {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        if stem.is_empty() || is_auxiliary_exe(&stem) {
+            continue;
+        }
+        // 体积过小的通常是托盘工具、组件或更新器。
+        if size < 256 * 1024 {
+            continue;
+        }
+        // 控制台程序（node、python、git 等）不是启动台要展示的桌面应用。
+        if is_console_executable(&path) {
+            continue;
+        }
+        let Some((product, description, company)) = file_version_strings(&path) else {
+            continue;
+        };
+        let name = if product.trim().is_empty() {
+            description
+        } else {
+            product
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() || is_junk_name(&name) || is_install_dir_auxiliary_name(&name) {
+            continue;
+        }
+        if !seen.insert(lower_path) {
+            continue;
+        }
+        result.push(RegistryApp {
+            name,
+            source: AppSource::InstallDir,
+            publisher: Some(company).filter(|value| !value.trim().is_empty()),
+            version: None,
+            install_location: path
+                .parent()
+                .map(|parent| parent.to_string_lossy().to_string()),
+            exe: Some(path_text),
+        });
+    }
+    result
+}
+
+#[cfg(windows)]
+fn install_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(value) = std::env::var(key) {
+            let path = PathBuf::from(value);
+            if path.is_dir() {
+                roots.push(path);
+            }
+        }
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let path = PathBuf::from(local).join("Programs");
+        if path.is_dir() {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
+/// 与 pick_main_executable 的浅层扫描不同，补扫需要覆盖较深的产品目录。
+#[cfg(windows)]
+fn collect_dir_executables(dir: &Path, remaining: u32, limit: usize, out: &mut Vec<(PathBuf, u64)>) {
+    if out.len() >= limit {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= limit {
+            return;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            if remaining == 0 {
+                continue;
+            }
+            let lower = entry.file_name().to_string_lossy().to_lowercase();
+            if lower.starts_with("unins")
+                || lower.contains("uninstall")
+                || matches!(
+                    lower.as_str(),
+                    "update"
+                        | "updates"
+                        | "updater"
+                        | "installer"
+                        | "install"
+                        | "setup"
+                        | "temp"
+                        | "cache"
+                        | "crashpad"
+                        | "crashreports"
+                        | "redist"
+                        | "redistributable"
+                        | "common files"
+                        | "windowsapps"
+                        | "dotnet"
+                )
+            {
+                continue;
+            }
+            collect_dir_executables(&path, remaining - 1, limit, out);
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("exe") {
+            out.push((path, metadata.len()));
+        }
+    }
+}
+
+/// 读取 PE 头判断 exe 是否为控制台程序（IMAGE_SUBSYSTEM_WINDOWS_CUI）。
+#[cfg(windows)]
+fn is_console_executable(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut dos = [0u8; 0x40];
+    if file.read_exact(&mut dos).is_err() || &dos[0..2] != b"MZ" {
+        return false;
+    }
+    let pe_offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
+    if file.seek(SeekFrom::Start(pe_offset)).is_err() {
+        return false;
+    }
+    let mut header = [0u8; 0x60];
+    if file.read_exact(&mut header).is_err() || &header[0..4] != b"PE\0\0" {
+        return false;
+    }
+    // 可选头从 PE 签名后 24 字节开始，Subsystem 位于可选头偏移 0x44。
+    u16::from_le_bytes([header[0x5c], header[0x5d]]) == 3
+}
+
+#[cfg(windows)]
+fn is_install_dir_auxiliary_path(path: &str) -> bool {
+    const DIRS: &[&str] = &[
+        r"\windowsapps\",
+        r"\common files\",
+        r"\uninstall\",
+        r"\uninstaller\",
+        r"\update\",
+        r"\updater\",
+        r"\installer\",
+        r"\crashpad\",
+        r"\redist\",
+        r"\redistributable\",
+        r"\driver\",
+        r"\drivers\",
+    ];
+    DIRS.iter().any(|dir| path.contains(dir))
+}
+
+#[cfg(windows)]
+fn is_install_dir_auxiliary_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    const WORDS: &[&str] = &[
+        "uninstall",
+        "updater",
+        "installer",
+        "redistributable",
+        "runtime",
+        "crashpad",
+        "crash reporter",
+        "telemetry",
+        "helper",
+        "webview2",
+        "language pack",
+    ];
+    WORDS.iter().any(|word| lower.contains(word))
+}
+
+/// 读取 exe 版本资源里的 ProductName / FileDescription / CompanyName。
+/// 文件属性页里看到的名称就来自这里，比文件名更接近用户认知。
+#[cfg(windows)]
+fn file_version_strings(path: &Path) -> Option<(String, String, String)> {
+    use std::ptr;
+    use windows::core::{w, HSTRING};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide = HSTRING::from(path.as_os_str().to_string_lossy().to_string());
+    let mut ignored = 0u32;
+    let size = unsafe { GetFileVersionInfoSizeW(&wide, Some(&mut ignored)) };
+    if size == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; size as usize];
+    unsafe { GetFileVersionInfoW(&wide, 0, size, buffer.as_mut_ptr().cast()) }.ok()?;
+
+    let mut lang = 0x0409u16;
+    let mut codepage = 0x04b0u16;
+    unsafe {
+        let mut translation: *mut core::ffi::c_void = ptr::null_mut();
+        let mut length = 0u32;
+        if VerQueryValueW(
+            buffer.as_ptr().cast(),
+            w!("\\VarFileInfo\\Translation"),
+            &mut translation,
+            &mut length,
+        )
+        .as_bool()
+            && length >= 4
+            && !translation.is_null()
+        {
+            let values = std::slice::from_raw_parts(translation as *const u16, 2);
+            lang = values[0];
+            codepage = values[1];
+        }
+    }
+
+    let read = |key: &str| -> String {
+        let sub = HSTRING::from(format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\{key}"));
+        unsafe {
+            let mut value: *mut core::ffi::c_void = ptr::null_mut();
+            let mut length = 0u32;
+            if !VerQueryValueW(buffer.as_ptr().cast(), &sub, &mut value, &mut length).as_bool()
+                || length == 0
+                || value.is_null()
+            {
+                return String::new();
+            }
+            let units = std::slice::from_raw_parts(value as *const u16, length as usize);
+            String::from_utf16_lossy(units)
+                .trim_matches('\0')
+                .trim()
+                .to_string()
+        }
+    };
+
+    let product = read("ProductName");
+    let description = read("FileDescription");
+    let company = read("CompanyName");
+    if product.is_empty() && description.is_empty() {
+        return None;
+    }
+    Some((product, description, company))
+}
+
+/// 安装目录补扫的条目只补充索引里没有的应用，避免覆盖更干净的显示名。
+#[cfg(windows)]
+fn merge_install_dir(accumulator: &mut Accumulator, apps: Vec<RegistryApp>) {
+    for app in apps {
+        let Some(exe) = app.exe else {
+            continue;
+        };
+        let target = LaunchTarget::Executable {
+            path: exe.clone(),
+            args: None,
+            workdir: app.install_location.clone(),
+        };
+        if accumulator.find(&app.name).is_some() || accumulator.find_target(&target).is_some() {
+            continue;
+        }
+        let category = classify(&app.name, app.publisher.as_deref().unwrap_or(""), &exe);
+        accumulator.push(
+            &app.name,
+            category,
+            app.source,
+            target,
+            app.publisher,
+            app.version,
+            app.install_location,
+            None,
+        );
+    }
+}
+
 /* ── Microsoft Store / UWP ────────────────────────────────────── */
 
 /// 直接枚举 `shell:AppsFolder`：与 Windows 开始菜单、任务栏搜索使用同一份清单。
@@ -1438,6 +1814,7 @@ fn source_key(source: AppSource) -> &'static str {
         AppSource::Registry => "reg",
         AppSource::Uwp => "uwp",
         AppSource::AppsFolder => "appsfolder",
+        AppSource::InstallDir => "installdir",
     }
 }
 
@@ -1989,10 +2366,13 @@ fn display_icon_to_exe(raw: &str) -> Option<String> {
     }
     let text = text.trim().trim_matches('"').trim();
     let expanded = expand_env_vars(text);
-    if !expanded.to_lowercase().ends_with(".exe") {
+    let lower = expanded.to_lowercase();
+    if !lower.ends_with(".exe") {
         return None;
     }
-    if Path::new(&expanded).is_file() {
+    // WindowsApps 受 ACL 保护，普通权限下 is_file() 可能失败；
+    // MSIX 应用的注册表项仍然有效，按存在处理。
+    if Path::new(&expanded).is_file() || lower.contains(r"\windowsapps\") {
         Some(expanded)
     } else {
         None
@@ -2105,5 +2485,19 @@ mod tests {
         assert!(!is_junk_name("WPS Office 文档"));
         assert!(!is_junk_name("小米互联服务"));
         assert!(is_junk_name("更新助手"));
+    }
+
+    #[test]
+    fn url_shortcuts_include_app_protocols_only() {
+        // Steam / Epic 用应用协议唤起游戏，属于可启动条目。
+        assert!(app_protocol_url("[InternetShortcut]\r\nURL=steam://rungameid/730\r\n"));
+        assert!(app_protocol_url(
+            "[{000214A0-0000-0000-C000-000000000046}]\r\nURL=com.epicgames.launcher://apps/Foo\r\n"
+        ));
+        // 网页书签与文件链接不是应用。
+        assert!(!app_protocol_url("[InternetShortcut]\r\nURL=https://www.bilibili.com\r\n"));
+        assert!(!app_protocol_url("[InternetShortcut]\r\nURL=http://example.com\r\n"));
+        assert!(!app_protocol_url("[InternetShortcut]\r\nURL=mailto:a@b.com\r\n"));
+        assert!(!app_protocol_url("[InternetShortcut]\r\nIconIndex=0\r\n"));
     }
 }

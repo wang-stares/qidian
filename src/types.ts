@@ -24,7 +24,14 @@ export type BlurLevel = "off" | "standard" | "strong";
 export type Density = "cozy" | "compact";
 export type SortMode = "name" | "recent" | "frequent";
 export type ViewMode = "grid" | "list";
-export type AppSource = "startMenu" | "desktop" | "appPaths" | "registry" | "uwp" | "appsFolder";
+export type AppSource =
+  | "startMenu"
+  | "desktop"
+  | "appPaths"
+  | "registry"
+  | "uwp"
+  | "appsFolder"
+  | "installDir";
 export type MemoryMode = "auto" | "custom" | "manual";
 export type MemoryLevel = "low" | "normal";
 export type MemoryTrimScope = "self" | "system";
@@ -137,6 +144,7 @@ export interface Settings {
   lowPower: boolean;
   scanUwp: boolean;
   includeSystemApps: boolean;
+  scanInstallDirs: boolean;
   autoRefreshHours: number;
   memoryMode: MemoryMode;
   memoryLevel: MemoryLevel;

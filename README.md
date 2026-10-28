@@ -3,7 +3,7 @@
 > 一个安静、轻量的 Windows 应用分类启动台 + 系统优化工具箱。
 > 作者：**望满天星辰** · 原创项目
 
-**当前版本 v1.4.3** · [下载安装包](https://github.com/wang-stares/qidian/releases/latest) · [更新日志](CHANGELOG.md)
+**当前版本 v1.4.4** · [下载安装包](https://github.com/wang-stares/qidian/releases/latest) · [更新日志](CHANGELOG.md)
 
 **启点（QiDian）** 是一款面向 Windows 10 / 11 的本地工具：它自动扫描本机的全部应用并按分类整理成启动台，同时内置一套插件化的「体检 / 优化 / 内存 / 后台 / 应用管理 / 启动与托盘」工具箱，让小白也能一键完成系统优化。所有操作都在本机完成，不联网、无广告、不常驻后台。
 
@@ -62,6 +62,7 @@
 
 ## 最近更新
 
+- **v1.4.4**（2026-10-28）扫描覆盖补齐：开始菜单支持 ClickOnce（`.appref-ms`）与 Steam / Epic 游戏协议（`.url`）快捷方式；新增可选的安装目录补充扫描（Program Files / LocalAppData\Programs），按 exe 版本资源识别无快捷方式的绿色软件，并过滤更新器、运行时与控制台程序；卸载注册表缺少 DisplayIcon 时改从 InstallLocation 反推主程序；WindowsApps 路径不再因 ACL 误判丢失。
 - **v1.4.3**（2026-10-28）开始菜单读取增加第三条独立通道：AppsFolder 的 Shell COM 不可用时改用 WinRT `PackageManager` 读取 MSIX 清单应用入口（参考 Flow Launcher），再退回 `Get-StartApps`；三条路径互不依赖，避免单点失败整批漏扫；扫描缓存版本升级后自动重扫。
 - **v1.4.2**（2026-10-28）修复 MSIX / Store 应用因 `WindowsApps` 目录权限被误判为失效快捷方式而整条丢弃的问题；设置 › 扫描新增「扫描来源」统计，按开始菜单 / 桌面 / App Paths / 注册表 / Store / 开始菜单索引展示数量，便于定位漏扫。
 - **v1.4.1**（2026-10-28）开始菜单清单改为直接枚举 `shell:AppsFolder`（Shell COM），不再依赖 PowerShell，PowerShell 仅作兜底；解决执行策略 / 安全软件拦截导致 Store、MSIX 与部分桌面应用整批漏扫的问题；扫描缓存升级后自动重扫。

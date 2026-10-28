@@ -12,6 +12,8 @@ pub enum AppSource {
     /// 来自 shell:AppsFolder 的应用入口（Windows 开始菜单的权威列表，
     /// 覆盖没有开始菜单快捷方式的 MSIX / 注册应用）。
     AppsFolder,
+    /// 从 Program Files 等安装目录补扫到的程序（可选来源）。
+    InstallDir,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +299,8 @@ pub struct Settings {
     pub low_power: bool,
     pub scan_uwp: bool,
     pub include_system_apps: bool,
+    /// 补扫 Program Files 等安装目录，找出没有快捷方式 / 注册表记录的绿色软件。
+    pub scan_install_dirs: bool,
     pub auto_refresh_hours: u32,
     pub memory_mode: String,
     pub memory_level: String,
@@ -354,6 +358,7 @@ impl Default for Settings {
             low_power: false,
             scan_uwp: true,
             include_system_apps: false,
+            scan_install_dirs: false,
             auto_refresh_hours: 12,
             memory_mode: "auto".to_string(),
             memory_level: "normal".to_string(),
@@ -410,4 +415,5 @@ fn category(id: &str, name: &str) -> Category {
 pub struct ScanOptions {
     pub scan_uwp: bool,
     pub include_system_apps: bool,
+    pub scan_install_dirs: bool,
 }
