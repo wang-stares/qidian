@@ -100,8 +100,10 @@ fn scan_windows(
                 workdir: None,
             }
         } else {
-            // 无法确认是文件路径的桌面规范名不加入，避免出现看得见却点不开的条目。
-            continue;
+            // 其余 AppsFolder 规范名（GUID / 特殊 AppID）由 explorer 解析。
+            LaunchTarget::Uwp {
+                aumid: app_id.clone(),
+            }
         };
         let category = classify(&name, "", &app_id);
         accumulator.push(
@@ -1305,13 +1307,11 @@ fn collect_apps_folder(include_system: bool) -> Vec<(String, String)> {
             if packaged && !include_system && is_system_uwp(&name) {
                 continue;
             }
-            // 无法确认可执行/可启动的条目跳过，避免出现点不开的应用。
-            let launchable = packaged
-                || canonical.to_lowercase().ends_with(".lnk")
-                || canonical.to_lowercase().ends_with(".exe");
-            if !launchable || is_junk_name(&name) {
+            if canonical.is_empty() || is_junk_name(&name) {
                 continue;
             }
+            // 其余规范名（GUID / 特殊 AppID）仍属于 AppsFolder 条目，
+            // 统一交给 explorer shell:AppsFolder\<canonical> 启动。
             result.push((name, canonical));
         }
     }

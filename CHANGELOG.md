@@ -9,7 +9,7 @@
 
 - **开始菜单清单不再依赖 PowerShell**：直接枚举 `shell:AppsFolder`（Shell COM：`SHGetKnownFolderItem` + `IEnumShellItems`），与开始菜单、任务栏搜索使用同一份数据源；PowerShell `Get-StartApps` 仅作为兜底。
   - 解决部分机器上 `Get-StartApps` 被执行策略 / 安全软件拦截、或冷启动超时后整份清单被丢弃，表现为 Store / MSIX 应用与部分桌面应用（如小米互联服务）整批漏扫；
-  - 枚举结果按「AUMID / `.lnk` / `.exe`」三类归一化，只有确认可启动的条目才进入列表；
+  - 枚举结果按「AUMID / `.lnk` / `.exe` / 其余 AppsFolder 规范名」归一化，全部交给 explorer 解析启动，不再丢弃未知规范名；
   - 系统内置 UWP 仍受「显示系统应用」开关控制。
 - 扫描缓存版本 8 → 9，升级后自动重扫一次。
 
