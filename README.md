@@ -170,6 +170,7 @@ qidian/
 ├── installer/            # NSIS 安装脚本
 ├── scripts/              # 版本管理 / 图标生成 / 更新公告脚本
 ├── preview/              # 界面截图
+├── assets/               # 赞赏码等媒体资源
 └── CHANGELOG.md          # 更新日志
 ```
 
@@ -187,6 +188,14 @@ qidian/
 ## 更新日志
 
 完整的版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 赞赏
+
+如果启点帮你省下了时间，可以请作者喝杯奶茶。赞赏完全自愿，不影响任何功能，也不影响后续更新。
+
+<p align="center">
+  <img src="assets/reward-qrcode.png" width="220" alt="微信赞赏码" />
+</p>
 
 ## 许可证
 
