@@ -2980,7 +2980,25 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
 }
 
 let aiStartPromise: Promise<void> | null = null;
+/** 正在进行的停止操作：启动前必须等它结束，否则会撞车。 */
+let aiStopPromise: Promise<void> | null = null;
 let aiWarmTimer: number | undefined;
+/** 离开 AI 页时还有请求在跑：等请求结束再释放模型。 */
+let aiLeavePending = false;
+
+/** 停止模型并刷新状态；同一时刻只允许一次停止。 */
+function requestAiStop(): Promise<void> {
+  if (aiStopPromise) return aiStopPromise;
+  aiStopPromise = api
+    .aiStop()
+    .then(() => refreshAiStatusQuiet())
+    .then(() => updateAiWarmUi())
+    .catch(() => undefined)
+    .finally(() => {
+      aiStopPromise = null;
+    });
+  return aiStopPromise;
+}
 
 /** 只更新「加载中」提示，避免预热时整页重绘打断输入。 */
 function updateAiWarmUi(): void {
@@ -3016,8 +3034,10 @@ async function refreshAiStatusQuiet(): Promise<void> {
 
 async function ensureAiServer(): Promise<void> {
   window.clearTimeout(aiIdleTimer);
-  if (state.aiStatus?.running) return;
   if (aiStartPromise) return aiStartPromise;
+  // 模型正在被释放：等它彻底退出再启动，避免刚预热就被停掉。
+  if (aiStopPromise) await aiStopPromise;
+  if (state.aiStatus?.running) return;
   state.aiWarming = true;
   if (state.workspace === "ai") updateAiWarmUi();
   aiStartPromise = (async () => {
@@ -3031,7 +3051,7 @@ async function ensureAiServer(): Promise<void> {
         updateAiWarmUi();
       } else {
         // 启动期间已经离开 AI 页：立即释放，不把模型常驻在内存里。
-        void api.aiStop();
+        void requestAiStop();
       }
     }
   })();
@@ -3063,9 +3083,13 @@ function scheduleAiWarm(): void {
 function stopAiServer(): void {
   window.clearTimeout(aiIdleTimer);
   window.clearTimeout(aiWarmTimer);
-  if (state.aiBusy || aiStartPromise) return;
-  if (!state.aiStatus?.running) return;
-  void api.aiStop().then(() => refreshAiStatus());
+  if (state.aiBusy || aiStartPromise) {
+    // 请求或加载还在进行：记下来，等这一轮结束后立刻释放。
+    aiLeavePending = true;
+    return;
+  }
+  if (!state.aiStatus?.running && !aiStopPromise) return;
+  void requestAiStop();
 }
 
 /**
@@ -3167,6 +3191,11 @@ async function sendAiMessage(text: string, speak = false): Promise<void> {
     state.aiError = String(error);
   } finally {
     state.aiBusy = false;
+    // 请求期间用户已离开 AI 页：这一轮结束后立刻释放模型。
+    if (aiLeavePending || state.workspace !== "ai") {
+      aiLeavePending = false;
+      void requestAiStop();
+    }
     refreshActive();
     scrollAiToBottom();
   }
@@ -3179,7 +3208,7 @@ function scheduleAiIdleStop(): void {
   aiIdleTimer = window.setTimeout(() => {
     if (state.aiBusy) return;
     if (state.workspace !== "ai") return;
-    void api.aiStop().then(() => refreshAiStatus());
+    void requestAiStop();
   }, 2 * 60 * 1000);
 }
 
@@ -3211,6 +3240,14 @@ async function switchAiModel(id: string): Promise<void> {
   if (!model) return;
   try {
     state.aiError = null;
+    // 预热还在启动中时先等它结束，否则切换会把刚拉起的进程打断成超时。
+    if (aiStartPromise) {
+      try {
+        await aiStartPromise;
+      } catch {
+        /* 预热失败不影响切换 */
+      }
+    }
     await api.aiSetModel(id);
     await refreshAiStatus();
     showToast(
