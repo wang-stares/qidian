@@ -86,6 +86,10 @@ pub struct Bootstrap {
     pub settings: Settings,
     pub apps: Vec<AppEntry>,
     pub scanned_at: Option<u64>,
+    /// 安装器是否勾选了本地 AI 助手。
+    pub ai_enabled: bool,
+    /// AI 运行时与模型是否已下载完成。
+    pub ai_installed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

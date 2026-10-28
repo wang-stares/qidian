@@ -10,6 +10,7 @@ import {
   watchMinimize,
   watchMemoryRestore,
   watchMemorySqueeze,
+  watchAiProgress,
   watchAppFocus,
   watchAppLaunch,
   setMemorySaver,
@@ -37,6 +38,10 @@ import {
 } from "./defaults";
 import type {
   AccentChoice,
+  AiChatMessage,
+  AiProgress,
+  AiStatus,
+  AiToolCall,
   AppEntry,
   CleanupApp,
   CleanupCandidate,
@@ -102,7 +107,7 @@ const SETTINGS_TABS = [
 ] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
-type WorkspaceTab = "launcher" | ModuleId;
+type WorkspaceTab = "launcher" | "ai" | ModuleId;
 
 interface WorkspaceMeta {
   id: WorkspaceTab;
@@ -120,6 +125,13 @@ const WORKSPACE_TABS: WorkspaceMeta[] = [
     glyph: "grid",
     title: "全部应用",
     description: "扫描、分类与启动本机应用",
+  },
+  {
+    id: "ai",
+    label: "AI",
+    glyph: "sparkle",
+    title: "AI 助手",
+    description: "本地模型问答、应用操作与语音对话",
   },
   {
     id: "background",
@@ -205,6 +217,16 @@ interface UiState {
   /** 壁纸库缩略图缓存：asset id → data URL。 */
   wallpaperThumbs: Record<string, string>;
   workspace: WorkspaceTab;
+  aiEnabled: boolean;
+  aiInstalled: boolean;
+  aiStatus: AiStatus | null;
+  aiMessages: AiChatMessage[];
+  aiInput: string;
+  aiBusy: boolean;
+  aiProgress: AiProgress | null;
+  aiError: string | null;
+  aiRecording: boolean;
+  aiSpeak: boolean;
   editingCategoryId: string | null;
   pendingCategoryDelete: string | null;
   newCategoryDraft: string;
@@ -345,6 +367,16 @@ const state: UiState = {
   wallpaperData: "",
   wallpaperThumbs: {},
   workspace: "launcher",
+  aiEnabled: false,
+  aiInstalled: false,
+  aiStatus: null,
+  aiMessages: [],
+  aiInput: "",
+  aiBusy: false,
+  aiProgress: null,
+  aiError: null,
+  aiRecording: false,
+  aiSpeak: false,
   editingCategoryId: null,
   pendingCategoryDelete: null,
   newCategoryDraft: "",
@@ -676,11 +708,19 @@ async function boot(): Promise<void> {
     state.settings = data.settings;
     state.apps = data.apps;
     state.scannedAt = data.scannedAt;
+    state.aiEnabled = data.aiEnabled;
+    state.aiInstalled = data.aiInstalled;
     state.loading = false;
     applyAppearance();
     renderAll();
     void syncWallpaperData();
     void loadModules();
+    if (state.aiEnabled || state.aiInstalled) void refreshAiStatus();
+    void watchAiProgress((progress) => {
+      state.aiProgress = progress;
+      if (progress.phase === "done") state.aiProgress = null;
+      if (state.workspace === "ai") refreshActive();
+    });
     window.setTimeout(() => void pruneMissingApps(true), 1500);
     scheduleWarmIcons(6000);
     const refreshHours = state.settings.autoRefreshHours;
@@ -1054,7 +1094,10 @@ function renderAll(): void {
 }
 
 function installedWorkspaceTabs(): WorkspaceMeta[] {
-  return WORKSPACE_TABS.filter((tab) => !tab.moduleId || moduleReady(tab.moduleId));
+  return WORKSPACE_TABS.filter((tab) => {
+    if (tab.id === "ai") return state.aiEnabled || state.aiInstalled;
+    return !tab.moduleId || moduleReady(tab.moduleId);
+  });
 }
 
 function renderSurfaceTabs(): void {
@@ -1095,12 +1138,15 @@ function surfacePanel(id: WorkspaceTab): string {
       return memoryPanel();
     case "cleanup":
       return cleanupPanel();
+    case "ai":
+      return aiPanel();
     default:
       return "";
   }
 }
 
 function renderSurface(): void {
+  els.content.classList.toggle("is-ai", state.workspace === "ai");
   if (state.workspace === "launcher") {
     renderContent();
     return;
@@ -1137,8 +1183,12 @@ function refreshActive(): void {
 }
 
 function setWorkspace(id: WorkspaceTab): void {
-  if (id !== "launcher" && !moduleReady(id as ModuleId)) {
+  if (id !== "launcher" && id !== "ai" && !moduleReady(id as ModuleId)) {
     showToast(`${moduleStatus(id as ModuleId)?.name ?? "该功能"}插件未安装，请在设置 › 插件中安装`, "info");
+    id = "launcher";
+  }
+  if (id === "ai" && !state.aiEnabled && !state.aiInstalled) {
+    showToast("本地 AI 助手未启用，请在设置 › 插件中启用", "info");
     id = "launcher";
   }
   if (state.workspace === id) {
@@ -1163,6 +1213,7 @@ function setWorkspace(id: WorkspaceTab): void {
     if (!state.cleanupApps) void loadCleanupApps();
   }
   if (id === "boot") loadBootState();
+  if (id === "ai") void refreshAiStatus();
 }
 
 function visibleApps(): AppEntry[] {
@@ -2158,6 +2209,23 @@ function pluginsPanel(): string {
       totalBytes,
     )}</div>
     <div class="plugin-list">${cards}</div>
+    <div class="settings-card" style="margin-top:14px">
+      <div class="setting-row">
+        <div class="setting-copy">
+          <div class="setting-title">本地 AI 助手</div>
+          <div class="setting-desc">Qwen2.5-1.5B + Whisper：问答、启动应用与语音对话，下载后完全离线。${
+            state.aiInstalled ? " 已安装。" : state.aiEnabled ? " 已启用，等待下载组件。" : ""
+          }</div>
+        </div>
+        <div class="setting-control">${
+          state.aiInstalled
+            ? `<button class="ghost-btn" data-settings-action="ai-open">打开 AI 助手</button>`
+            : state.aiEnabled
+              ? `<button class="ghost-btn" data-settings-action="ai-open">前往下载</button>`
+              : `<button class="primary-btn" data-settings-action="ai-enable">启用</button>`
+        }</div>
+      </div>
+    </div>
   </section>`;
 }
 
@@ -2306,6 +2374,547 @@ function bootSettings(): string {
   </section>`;
 }
 
+/* ── local AI assistant ───────────────────────────────────────── */
+
+const AI_PHASES: Record<string, string> = {
+  llama: "llama.cpp 运行组件",
+  whisper: "whisper.cpp 语音组件",
+  model: "Qwen2.5-1.5B 语言模型",
+  speech: "Whisper Base 语音模型",
+  extract: "正在解压组件",
+};
+
+const AI_SYSTEM_PROMPT =
+  "你是启点（QiDian）内置的本地 AI 助手。回答要简洁、直接，使用简体中文。" +
+  "当用户要求打开、启动或查找某个应用时，必须先调用 search_apps 获取候选，再调用 launch_app 启动；" +
+  "候选为空时如实说明，不要编造应用。只有在用户明确要求修改设置时才调用 open_settings。" +
+  "你不能执行 shell、删除文件、结束进程或修改系统；遇到这类请求要拒绝并说明原因。" +
+  "不要声称自己联网，也不要输出工具调用 JSON 让用户手动执行。";
+
+const AI_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_apps",
+      description:
+        "在本机应用索引里搜索应用，返回最多 8 个候选。启动应用前必须先调用它取得 app_id。",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "应用名称、拼音或发布者关键词" } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "launch_app",
+      description: "启动 search_apps 返回的某个应用，必须使用候选里的 app_id。",
+      parameters: {
+        type: "object",
+        properties: { app_id: { type: "string", description: "search_apps 返回的应用 id" } },
+        required: ["app_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_settings",
+      description: "打开设置面板的指定页，仅在用户明确要求修改设置时使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          section: {
+            type: "string",
+            enum: ["appearance", "wallpaper", "categories", "apps", "boot", "plugins", "about"],
+          },
+        },
+        required: ["section"],
+      },
+    },
+  },
+];
+
+async function refreshAiStatus(): Promise<void> {
+  try {
+    state.aiStatus = await api.aiStatus();
+    state.aiInstalled = state.aiStatus.installed;
+  } catch (error) {
+    state.aiError = String(error);
+  }
+  refreshActive();
+}
+
+function aiSetupPanel(): string {
+  const progress = state.aiProgress;
+  const downloading = Boolean(progress) || Boolean(state.aiStatus?.downloading);
+  const percent = progress?.percent ?? 0;
+  const phase = progress ? (AI_PHASES[progress.phase] ?? progress.phase) : "";
+  const total = state.aiStatus?.totalBytes ?? 1_265_272_291;
+  return `<div class="ai-shell ai-setup">
+    <div class="ai-setup-hero">
+      <span class="ai-avatar is-large">${icon("sparkle")}</span>
+      <div class="ai-setup-copy">
+        <h2>本地 AI 助手</h2>
+        <p>一个可选的小模型组件：问答、启动应用、语音对话，全部在本机运行，不联网、不上传。</p>
+      </div>
+    </div>
+    <div class="ai-capabilities">
+      <span>${icon("chat")}问答</span>
+      <span>${icon("grid")}操作应用</span>
+      <span>${icon("mic")}语音对话</span>
+      <span>${icon("shield")}完全离线</span>
+    </div>
+    <div class="ai-pack">
+      <div class="ai-pack-row"><span>llama.cpp 推理运行时</span><span>24 MB</span></div>
+      <div class="ai-pack-row"><span>Qwen2.5-1.5B-Instruct（Q4）</span><span>1.04 GB</span></div>
+      <div class="ai-pack-row"><span>whisper.cpp 语音运行时</span><span>9 MB</span></div>
+      <div class="ai-pack-row"><span>Whisper Base 语音识别模型</span><span>141 MB</span></div>
+      <div class="ai-pack-row is-total"><span>合计</span><span>${formatBytes(total)}</span></div>
+    </div>
+    ${
+      downloading
+        ? `<div class="ai-download-state">
+            <div class="ai-download-copy"><span>${escapeHtml(phase || "正在准备下载")}</span><span>${Math.round(
+              percent,
+            )}%</span></div>
+            <div class="ai-progress"><span style="width:${Math.max(1.5, percent)}%"></span></div>
+            <p>下载完成后会自动解压并校验；已完成的组件会保留，失败可重试。</p>
+          </div>`
+        : ""
+    }
+    ${state.aiError ? `<div class="ai-error">${escapeHtml(state.aiError)}</div>` : ""}
+    <div class="ai-setup-actions">
+      <button class="primary-btn ai-download" data-ai-action="download" ${
+        downloading ? "disabled" : ""
+      }>${downloading ? "正在下载…" : "下载并安装（约 1.2 GB）"}</button>
+      <button class="ghost-btn" data-ai-action="refresh">重新检测</button>
+    </div>
+    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败会自动换源；安装完成后完全离线。</p>
+  </div>`;
+}
+
+function aiSuggestions(): string {
+  const prompts = ["打开微信", "帮我找剪辑软件", "列出最近常用的应用"];
+  return `<div class="ai-empty">
+    <span class="ai-empty-icon">${icon("sparkle")}</span>
+    <h3>本地 AI 助手</h3>
+    <p>可以问答，也可以让它启动应用。语音按钮支持按住说话。</p>
+    <div class="ai-prompts">${prompts
+      .map(
+        (prompt) =>
+          `<button data-ai-action="prompt" data-value="${escapeHtml(prompt)}">${escapeHtml(
+            prompt,
+          )}</button>`,
+      )
+      .join("")}</div>
+  </div>`;
+}
+
+function aiMessageHtml(message: AiChatMessage): string {
+  if (message.role === "user") {
+    return `<div class="ai-row is-user"><div class="ai-bubble is-user">${escapeHtml(
+      message.content,
+    )}</div></div>`;
+  }
+  if (message.role !== "assistant" || !message.content.trim()) return "";
+  return `<div class="ai-row"><span class="ai-avatar">${icon("sparkle")}</span><div class="ai-bubble">${escapeHtml(
+    message.content,
+  )}</div></div>`;
+}
+
+function aiPanel(): string {
+  const status = state.aiStatus;
+  const installed = status?.installed ?? state.aiInstalled;
+  if (!installed) {
+    return status
+      ? aiSetupPanel()
+      : `<div class="ai-shell"><div class="ai-loading"><span class="inline-spinner"></span>正在检测本地 AI 组件…</div></div>`;
+  }
+  const messages = state.aiMessages.map(aiMessageHtml).join("");
+  return `<div class="ai-shell ai-chat">
+    <header class="ai-head">
+      <div class="ai-head-copy">
+        <span class="ai-avatar">${icon("sparkle")}</span>
+        <div>
+          <div class="ai-head-status${status?.running ? " is-on" : ""}"><span class="ai-dot"></span>${
+            status?.running ? "本地模型已启动" : "本地模型 · 按需启动"
+          }</div>
+          <p>${escapeHtml(status?.modelLabel ?? "Qwen2.5-1.5B · Whisper Base")} · 完全离线</p>
+        </div>
+      </div>
+      <div class="ai-head-actions">
+        <button class="ai-icon-btn${state.aiSpeak ? " is-on" : ""}" data-ai-action="toggle-speak" title="${
+          state.aiSpeak ? "关闭语音朗读" : "开启语音朗读"
+        }">${icon("volume")}</button>
+        <button class="ai-icon-btn" data-ai-action="clear" title="清空对话">${icon("trash")}</button>
+      </div>
+    </header>
+    <div class="ai-messages">
+      ${messages || aiSuggestions()}
+      ${
+        state.aiBusy
+          ? `<div class="ai-typing"><span></span><span></span><span></span></div>`
+          : ""
+      }
+      ${state.aiError ? `<div class="ai-error">${escapeHtml(state.aiError)}</div>` : ""}
+    </div>
+    <div class="ai-composer">
+      <textarea rows="1" data-ai-input placeholder="问点什么，或让启点打开某个应用…" ${
+        state.aiBusy ? "disabled" : ""
+      }>${escapeHtml(state.aiInput)}</textarea>
+      <button class="ai-mic${state.aiRecording ? " is-recording" : ""}" data-ai-action="mic" title="${
+        state.aiRecording ? "停止录音" : "语音输入"
+      }">${icon(state.aiRecording ? "stop" : "mic")}</button>
+      <button class="ai-send" data-ai-action="send" ${state.aiBusy ? "disabled" : ""}>${icon(
+        "send",
+      )}</button>
+    </div>
+    <p class="ai-footnote">对话与录音只在本机处理；模型回答可能出错，启动应用前会先检索本机索引。<button class="ai-link" data-ai-action="remove">删除本地组件</button></p>
+  </div>`;
+}
+
+function aiSearchApps(query: string): Array<Record<string, string>> {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const compactNeedle = needle.replace(/\s+/g, "");
+  const scored = state.apps
+    .map((app) => {
+      const name = app.name.toLowerCase();
+      const compact = name.replace(/\s+/g, "");
+      const publisher = (app.publisher ?? "").toLowerCase();
+      let score = 0;
+      if (name === needle) score = 100;
+      else if (name.includes(needle)) score = 82;
+      else if (compact.includes(compactNeedle)) score = 70;
+      else if (publisher.includes(needle)) score = 42;
+      return { app, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.app.name.localeCompare(right.app.name))
+    .slice(0, 8);
+  return scored.map(({ app }) => ({
+    app_id: app.id,
+    name: app.name,
+    category: app.category,
+    publisher: app.publisher ?? "",
+  }));
+}
+
+async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
+  let args: Record<string, unknown> = {};
+  try {
+    const raw = call.function.arguments as unknown;
+    args = (
+      typeof raw === "string" ? JSON.parse(raw || "{}") : (raw ?? {})
+    ) as Record<string, unknown>;
+  } catch {
+    return { ok: false, error: "参数不是合法 JSON" };
+  }
+  switch (call.function.name) {
+    case "search_apps": {
+      const query = typeof args.query === "string" ? args.query : "";
+      const apps = aiSearchApps(query);
+      return { ok: true, apps, count: apps.length };
+    }
+    case "launch_app": {
+      const id = typeof args.app_id === "string" ? args.app_id : "";
+      const app = state.apps.find((item) => item.id === id);
+      if (!app) return { ok: false, error: "应用 id 不存在，请先调用 search_apps" };
+      const result = await api.launch(app.id);
+      return { ok: result.ok, name: app.name, error: result.error ?? "" };
+    }
+    case "open_settings": {
+      const section = typeof args.section === "string" ? args.section : "appearance";
+      const allowed: SettingsTab[] = [
+        "appearance",
+        "wallpaper",
+        "categories",
+        "apps",
+        "boot",
+        "plugins",
+        "about",
+      ];
+      const target = (allowed.includes(section as SettingsTab) ? section : "appearance") as SettingsTab;
+      openSettings(target);
+      return { ok: true, section: target };
+    }
+    default:
+      return { ok: false, error: `未知工具：${call.function.name}` };
+  }
+}
+
+async function ensureAiServer(): Promise<void> {
+  window.clearTimeout(aiIdleTimer);
+  if (state.aiStatus?.running) return;
+  await api.aiStart();
+  await refreshAiStatus();
+}
+
+async function sendAiMessage(text: string, speak = false): Promise<void> {
+  const content = text.trim();
+  if (!content || state.aiBusy) return;
+  state.aiInput = "";
+  state.aiError = null;
+  state.aiMessages.push({ role: "user", content });
+  state.aiBusy = true;
+  refreshActive();
+  scrollAiToBottom();
+  try {
+    await ensureAiServer();
+    let finalText = "";
+    for (let step = 0; step < 4; step += 1) {
+      const reply = await api.aiChat(
+        [
+          { role: "system", content: AI_SYSTEM_PROMPT },
+          ...state.aiMessages.slice(-16),
+        ],
+        AI_TOOLS,
+      );
+      const toolCalls = Array.isArray(reply.tool_calls) ? (reply.tool_calls as AiToolCall[]) : [];
+      const replyContent = typeof reply.content === "string" ? reply.content : "";
+      if (toolCalls.length > 0) {
+        state.aiMessages.push({
+          role: "assistant",
+          content: replyContent,
+          tool_calls: toolCalls,
+        });
+        for (const call of toolCalls) {
+          const result = await runAiTool(call);
+          // launch_app 已在工具里写入一条空 tool 消息，避免重复。
+          if (!state.aiMessages.some((message) => message.tool_call_id === call.id)) {
+            state.aiMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: JSON.stringify(result),
+            });
+          }
+        }
+        refreshActive();
+        scrollAiToBottom();
+        continue;
+      }
+      finalText = replyContent.trim();
+      if (finalText) {
+        state.aiMessages.push({ role: "assistant", content: finalText });
+      }
+      break;
+    }
+    if (!finalText && state.aiMessages.length > 0) {
+      state.aiError = "模型没有给出回答，请换个说法再试";
+    }
+    if ((speak || state.aiSpeak) && finalText) speakAi(finalText);
+    scheduleAiIdleStop();
+  } catch (error) {
+    state.aiError = String(error);
+  } finally {
+    state.aiBusy = false;
+    refreshActive();
+    scrollAiToBottom();
+  }
+}
+
+let aiIdleTimer: number | undefined;
+
+function scheduleAiIdleStop(): void {
+  window.clearTimeout(aiIdleTimer);
+  aiIdleTimer = window.setTimeout(() => {
+    if (state.aiBusy) return;
+    void api.aiStop().then(() => refreshAiStatus());
+  }, 5 * 60 * 1000);
+}
+
+function scrollAiToBottom(): void {
+  window.requestAnimationFrame(() => {
+    const panel = document.querySelector<HTMLElement>(".ai-messages");
+    panel?.lastElementChild?.scrollIntoView({ block: "end", behavior: "smooth" });
+  });
+}
+
+function speakAi(text: string): void {
+  if (!("speechSynthesis" in window)) return;
+  const plain = text
+    .replace(/[`*#_>~]/g, "")
+    .replace(/\[(.*?)\]\(.*?\)/g, "$1")
+    .trim();
+  if (!plain) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(plain.slice(0, 600));
+  utterance.lang = "zh-CN";
+  utterance.rate = 1.04;
+  window.speechSynthesis.speak(utterance);
+}
+
+async function downloadAiPack(): Promise<void> {
+  if (state.aiProgress) return;
+  state.aiError = null;
+  state.aiProgress = { phase: "llama", done: 0, total: 1, percent: 0 };
+  refreshActive();
+  try {
+    await api.aiDownload();
+    await refreshAiStatus();
+    showToast("AI 组件已就绪，可以开始对话", "success");
+  } catch (error) {
+    state.aiError = String(error);
+  } finally {
+    state.aiProgress = null;
+    refreshActive();
+  }
+}
+
+async function removeAiPack(): Promise<void> {
+  if (!window.confirm("删除本地 AI 组件？将释放约 1.2 GB 空间，对话记录也会清空。")) return;
+  try {
+    await api.aiRemove();
+    state.aiInstalled = false;
+    state.aiMessages = [];
+    state.aiProgress = null;
+    await refreshAiStatus();
+    showToast("已删除本地 AI 组件", "info");
+  } catch (error) {
+    state.aiError = String(error);
+    refreshActive();
+  }
+}
+
+let aiRecorder: MediaRecorder | null = null;
+let aiStream: MediaStream | null = null;
+let aiChunks: Blob[] = [];
+
+async function toggleAiRecording(): Promise<void> {
+  if (state.aiRecording) {
+    aiRecorder?.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    aiStream = stream;
+    aiChunks = [];
+    const recorder = new MediaRecorder(stream);
+    aiRecorder = recorder;
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) aiChunks.push(event.data);
+    };
+    recorder.onstop = async () => {
+      state.aiRecording = false;
+      aiStream?.getTracks().forEach((track) => track.stop());
+      aiStream = null;
+      refreshActive();
+      const blob = new Blob(aiChunks, { type: recorder.mimeType || "audio/webm" });
+      aiChunks = [];
+      if (blob.size < 2000) {
+        state.aiError = "录音太短，请按住说话";
+        refreshActive();
+        return;
+      }
+      try {
+        const wav = await blobToWavBase64(blob);
+        const text = await api.aiTranscribe(wav);
+        if (text.trim()) {
+          state.aiInput = text.trim();
+          refreshActive();
+          void sendAiMessage(text, true);
+        }
+      } catch (error) {
+        state.aiError = String(error);
+        refreshActive();
+      }
+    };
+    recorder.start();
+    state.aiRecording = true;
+    state.aiError = null;
+    refreshActive();
+  } catch (error) {
+    state.aiError =
+      "无法访问麦克风，请在 Windows 隐私设置里允许启点使用麦克风：" + String(error);
+    refreshActive();
+  }
+}
+
+function writeAscii(view: DataView, offset: number, text: string): void {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
+}
+
+async function blobToWavBase64(blob: Blob): Promise<string> {
+  const array = await blob.arrayBuffer();
+  const context = new AudioContext();
+  const decoded = await context.decodeAudioData(array);
+  await context.close();
+  const rate = 16000;
+  const length = Math.max(1, Math.ceil(decoded.duration * rate));
+  const offline = new OfflineAudioContext(1, length, rate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  const samples = rendered.getChannelData(0);
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let offset = 44;
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[index]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += 2;
+  }
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
+}
+
+async function handleAiAction(action: string, element: HTMLElement): Promise<void> {
+  switch (action) {
+    case "download":
+      void downloadAiPack();
+      return;
+    case "refresh":
+      await refreshAiStatus();
+      return;
+    case "send":
+      void sendAiMessage(state.aiInput);
+      return;
+    case "prompt":
+      void sendAiMessage(element.dataset.value ?? "");
+      return;
+    case "mic":
+      void toggleAiRecording();
+      return;
+    case "toggle-speak":
+      state.aiSpeak = !state.aiSpeak;
+      if (!state.aiSpeak) window.speechSynthesis?.cancel();
+      refreshActive();
+      return;
+    case "clear":
+      state.aiMessages = [];
+      state.aiError = null;
+      refreshActive();
+      return;
+    case "remove":
+      void removeAiPack();
+      return;
+  }
+}
+
 /* ── settings ─────────────────────────────────────────────────── */
 
 function settingsHtml(): string {
@@ -2353,7 +2962,7 @@ function settingsHtml(): string {
       </div>
     </div>
     <div class="modal-foot">
-      <div class="modal-foot-left">${icon("shield")}<span>数据仅保存在本机 · 无联网 · 无遥测</span></div>
+      <div class="modal-foot-left">${icon("shield")}<span>数据仅保存在本机 · 默认不联网 · 无遥测</span></div>
       <div class="modal-foot-right"><span>v${APP_VERSION}</span></div>
     </div>
   </div>`;
@@ -6982,6 +7591,23 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       }
       return;
     }
+    case "ai-enable": {
+      try {
+        await api.aiSetEnabled(true);
+        state.aiEnabled = true;
+        closeSettings();
+        setWorkspace("ai");
+        void refreshAiStatus();
+        showToast("已启用本地 AI 助手，请在 AI 页下载组件", "success");
+      } catch (error) {
+        showToast(`启用失败：${String(error)}`, "error");
+      }
+      return;
+    }
+    case "ai-open":
+      closeSettings();
+      setWorkspace("ai");
+      return;
     case "plugins-refresh":
       void loadModules();
       return;
@@ -8557,12 +9183,34 @@ els.modalLayer.addEventListener("change", (event) => {
   state.hotkeyAppPick = select.value;
   refreshActive();
 });
-els.contentBody.addEventListener("click", (event) => void onModalClick(event));
+els.contentBody.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const aiAction = target.closest<HTMLElement>("[data-ai-action]");
+  if (aiAction?.dataset.aiAction) {
+    event.preventDefault();
+    void handleAiAction(aiAction.dataset.aiAction, aiAction);
+    return;
+  }
+  void onModalClick(event);
+});
 els.contentBody.addEventListener("input", (event) => {
+  const aiInput = (event.target as HTMLElement).closest<HTMLTextAreaElement>("[data-ai-input]");
+  if (aiInput) {
+    state.aiInput = aiInput.value;
+    return;
+  }
   const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-app-search]");
   if (!input) return;
   state.cleanupAppQuery = input.value;
   refreshCleanupAppList();
+});
+els.contentBody.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLElement;
+  if (!target.matches("[data-ai-input]")) return;
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void sendAiMessage((target as HTMLTextAreaElement).value);
+  }
 });
 els.modalLayer.addEventListener("input", onModalInput);
 els.modalLayer.addEventListener("keydown", onModalKeydown);

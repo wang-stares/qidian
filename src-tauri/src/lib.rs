@@ -1,3 +1,4 @@
+mod ai;
 mod autostart;
 mod cleanup;
 mod force_delete;
@@ -77,7 +78,60 @@ fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
         settings,
         apps,
         scanned_at,
+        ai_enabled: ai::enabled(),
+        ai_installed: ai::installed(&state.paths),
     })
+}
+
+#[tauri::command]
+fn ai_status(state: State<'_, AppState>, ai: State<'_, ai::AiState>) -> Result<ai::AiStatus, String> {
+    Ok(ai::status(&state.paths, &ai))
+}
+
+#[tauri::command]
+fn ai_set_enabled(enabled: bool) -> Result<(), String> {
+    ai::set_enabled(enabled)
+}
+
+#[tauri::command]
+async fn ai_download(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let paths = state.paths.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || ai::download_pack(&app, &paths))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn ai_start(state: State<'_, AppState>, ai: State<'_, ai::AiState>) -> Result<(), String> {
+    ai::start(&state.paths, &ai)
+}
+
+#[tauri::command]
+fn ai_stop(ai: State<'_, ai::AiState>) {
+    ai::stop(&ai);
+}
+
+#[tauri::command]
+fn ai_chat(
+    ai: State<'_, ai::AiState>,
+    messages: serde_json::Value,
+    tools: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !ai.running() {
+        return Err("本地模型尚未启动".to_string());
+    }
+    ai::chat(messages, tools)
+}
+
+#[tauri::command]
+fn ai_transcribe(state: State<'_, AppState>, wav: String) -> Result<String, String> {
+    ai::transcribe(&state.paths, &wav)
+}
+
+#[tauri::command]
+fn ai_remove(state: State<'_, AppState>, ai: State<'_, ai::AiState>) -> Result<(), String> {
+    ai::remove(&state.paths, &ai)
 }
 
 #[tauri::command]
@@ -917,6 +971,7 @@ fn tray_status() -> bool {
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     QUITTING.store(true, Ordering::SeqCst);
+    ai::stop(&app.state::<ai::AiState>());
     app.exit(0);
 }
 
@@ -1614,6 +1669,7 @@ pub fn run() {
                 apps: Mutex::new(apps),
                 cache_at: Mutex::new(cache_at),
             });
+            app.manage(ai::AiState::default());
             memory::init(&base);
 
             // 除“启动应用”外的能力都以插件形式存在，只有安装后才初始化对应的常驻逻辑。
@@ -1650,6 +1706,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            ai_status,
+            ai_set_enabled,
+            ai_download,
+            ai_start,
+            ai_stop,
+            ai_chat,
+            ai_transcribe,
+            ai_remove,
             prune_missing_apps,
             scan_apps,
             load_icons,
@@ -1705,6 +1769,11 @@ pub fn run() {
             quit_app,
             set_memory_saver
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running QiDian");
+        .build(tauri::generate_context!())
+        .expect("error while building QiDian")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                ai::stop(&app.state::<ai::AiState>());
+            }
+        });
 }

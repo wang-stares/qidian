@@ -24,6 +24,15 @@ export type BlurLevel = "off" | "standard" | "strong";
 export type Density = "cozy" | "compact";
 export type SortMode = "name" | "recent" | "frequent";
 export type ViewMode = "grid" | "list";
+export type AiPhase =
+  | "idle"
+  | "llama"
+  | "whisper"
+  | "model"
+  | "speech"
+  | "extract"
+  | "done";
+
 export type AppSource =
   | "startMenu"
   | "desktop"
@@ -177,6 +186,41 @@ export interface Bootstrap {
   settings: Settings;
   apps: AppEntry[];
   scannedAt: number | null;
+  aiEnabled: boolean;
+  aiInstalled: boolean;
+}
+
+export interface AiStatus {
+  enabled: boolean;
+  installed: boolean;
+  running: boolean;
+  downloadedBytes: number;
+  totalBytes: number;
+  modelLabel: string;
+  downloading: boolean;
+}
+
+export interface AiProgress {
+  phase: string;
+  done: number;
+  total: number;
+  percent: number;
+}
+
+export interface AiToolCall {
+  id: string;
+  type: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface AiChatMessage {
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  tool_calls?: AiToolCall[];
+  tool_call_id?: string;
 }
 
 export interface MemoryLastAction {

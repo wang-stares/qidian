@@ -1,4 +1,7 @@
 import type {
+  AiChatMessage,
+  AiProgress,
+  AiStatus,
   AppEntry,
   Bootstrap,
   CleanupApp,
@@ -36,6 +39,10 @@ const TAURI = "__TAURI_INTERNALS__" in window;
 const MOCK_KEY = "qidian.settings.v1";
 let mockModulePromise: Promise<typeof import("./mock")> | null = null;
 let mockAutostart = localStorage.getItem("qidian.mock.autostart") === "1";
+let mockAiInstalled = false;
+let mockAiRunning = false;
+
+const AI_TOTAL_BYTES = 1_265_272_291;
 
 export const isTauri = TAURI;
 
@@ -187,6 +194,8 @@ const mockBridge = {
       settings: await loadMockSettings(),
       apps: MOCK_APPS,
       scannedAt: Date.now() - 42 * 60 * 1000,
+      aiEnabled: true,
+      aiInstalled: mockAiInstalled,
     };
   },
 
@@ -272,6 +281,58 @@ const mockBridge = {
     await sleep(1200);
     const { mockCleanupUninstall } = await mockModule();
     return mockCleanupUninstall(id, removeLeftovers);
+  },
+
+  async aiStatus(): Promise<AiStatus> {
+    await sleep(80);
+    return {
+      enabled: true,
+      installed: mockAiInstalled,
+      running: mockAiRunning,
+      downloadedBytes: mockAiInstalled ? AI_TOTAL_BYTES : 0,
+      totalBytes: AI_TOTAL_BYTES,
+      modelLabel: "Qwen2.5-1.5B · Whisper Base",
+      downloading: false,
+    };
+  },
+
+  async aiSetEnabled(_enabled: boolean): Promise<void> {
+    void _enabled;
+    await sleep(20);
+  },
+
+  async aiDownload(): Promise<void> {
+    await sleep(900);
+    mockAiInstalled = true;
+  },
+
+  async aiStart(): Promise<void> {
+    await sleep(200);
+    mockAiRunning = true;
+  },
+
+  async aiStop(): Promise<void> {
+    mockAiRunning = false;
+  },
+
+  async aiChat(messages: AiChatMessage[]): Promise<Record<string, unknown>> {
+    void messages;
+    await sleep(700);
+    return {
+      role: "assistant",
+      content:
+        "这是浏览器预览模式。桌面版会把问题交给本地 Qwen2.5-1.5B 模型，并且可以调用应用搜索、启动应用与打开设置。",
+    };
+  },
+
+  async aiTranscribe(): Promise<string> {
+    await sleep(300);
+    return "打开微信";
+  },
+
+  async aiRemove(): Promise<void> {
+    mockAiInstalled = false;
+    mockAiRunning = false;
   },
 
   async saveSettings(settings: Settings): Promise<void> {
@@ -641,6 +702,41 @@ const tauriBridge = {
     return tauriInvoke<TerminateReport>("terminate_processes", { targets });
   },
 
+  aiStatus(): Promise<AiStatus> {
+    return tauriInvoke<AiStatus>("ai_status");
+  },
+
+  aiSetEnabled(enabled: boolean): Promise<void> {
+    return tauriInvoke<void>("ai_set_enabled", { enabled });
+  },
+
+  aiDownload(): Promise<void> {
+    return tauriInvoke<void>("ai_download");
+  },
+
+  aiStart(): Promise<void> {
+    return tauriInvoke<void>("ai_start");
+  },
+
+  aiStop(): Promise<void> {
+    return tauriInvoke<void>("ai_stop");
+  },
+
+  aiChat(
+    messages: AiChatMessage[],
+    tools: unknown[],
+  ): Promise<Record<string, unknown>> {
+    return tauriInvoke<Record<string, unknown>>("ai_chat", { messages, tools });
+  },
+
+  aiTranscribe(wav: string): Promise<string> {
+    return tauriInvoke<string>("ai_transcribe", { wav });
+  },
+
+  aiRemove(): Promise<void> {
+    return tauriInvoke<void>("ai_remove");
+  },
+
   modules(): Promise<ModuleStatus[]> {
     return tauriInvoke<ModuleStatus[]>("list_modules");
   },
@@ -899,6 +995,18 @@ async function watchMemoryEvent(name: string, callback: () => void): Promise<() 
   try {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen(name, () => callback());
+  } catch {
+    return () => undefined;
+  }
+}
+
+export async function watchAiProgress(
+  callback: (progress: AiProgress) => void,
+): Promise<() => void> {
+  if (!TAURI) return () => undefined;
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<AiProgress>("ai-progress", (event) => callback(event.payload));
   } catch {
     return () => undefined;
   }

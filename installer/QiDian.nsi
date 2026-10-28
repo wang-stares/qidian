@@ -75,6 +75,12 @@ Section "主程序（必需）" SecMain
   CreateShortCut "$SMPROGRAMS\启点\卸载 启点.lnk" "$INSTDIR\uninst.exe"
 
   WriteRegStr HKCU "Software\QiDian" "InstallDir" "$INSTDIR"
+  ; 升级时保留用户上次的 AI 选择；仅在首次安装时写入默认关闭。
+  ClearErrors
+  ReadRegDWORD $0 HKCU "Software\QiDian" "AiEnabled"
+  ${If} ${Errors}
+    WriteRegDWORD HKCU "Software\QiDian" "AiEnabled" 0
+  ${EndIf}
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\QiDian" "DisplayName" "启点"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\QiDian" "DisplayIcon" "$INSTDIR\QiDian.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\QiDian" "DisplayVersion" "${APP_VERSION}"
@@ -92,9 +98,16 @@ Section /o "桌面快捷方式（可选）" SecDesktop
   CreateShortCut "$DESKTOP\启点.lnk" "$INSTDIR\QiDian.exe" "" "$INSTDIR\QiDian.exe" 0
 SectionEnd
 
+Section /o "本地 AI 助手（可选，约 1.2 GB）" SecAi
+  SetShellVarContext current
+  ; 只记录安装偏好；运行时与模型在首次打开「AI」页时按需下载，避免安装包膨胀。
+  WriteRegDWORD HKCU "Software\QiDian" "AiEnabled" 1
+SectionEnd
+
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "安装启点主程序、开始菜单快捷方式、应用索引与卸载程序，并以管理员权限运行。"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "在桌面创建“启点”快捷方式；默认不勾选，保持桌面干净。"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecAi} "启用本地 AI 助手：Qwen2.5-1.5B 问答与工具调用、Whisper 语音识别，全部在本机运行。安装包不包含模型，首次打开 AI 页时从 GitHub / Hugging Face 下载约 1.2 GB。"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
