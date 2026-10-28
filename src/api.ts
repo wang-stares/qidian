@@ -78,6 +78,12 @@ function normalizeSettings(raw: unknown): Settings {
       typeof incoming.hotkeyToggle === "string" && incoming.hotkeyToggle.trim()
         ? incoming.hotkeyToggle
         : DEFAULT_SETTINGS.hotkeyToggle,
+    aiPermissions: {
+      ...DEFAULT_SETTINGS.aiPermissions,
+      ...(incoming.aiPermissions && typeof incoming.aiPermissions === "object"
+        ? incoming.aiPermissions
+        : {}),
+    },
     closeToTray:
       typeof incoming.closeToTray === "boolean"
         ? incoming.closeToTray
@@ -315,12 +321,25 @@ const mockBridge = {
     mockAiRunning = false;
   },
 
-  async aiChat(messages: AiChatMessage[]): Promise<Record<string, unknown>> {
+  async aiChat(
+    messages: AiChatMessage[],
+    availableTools: unknown[] = [],
+  ): Promise<Record<string, unknown>> {
     await sleep(500);
     const lastUser = [...messages].reverse().find((message) => message.role === "user");
     const tools = messages.filter((message) => message.role === "tool").length;
     const text = lastUser?.content ?? "";
+    const toolNames = (availableTools as Array<{ function?: { name?: string } }>)
+      .map((tool) => tool.function?.name ?? "")
+      .filter(Boolean);
     if (text.includes("关闭") && text.includes("微信")) {
+      if (!toolNames.includes("list_running_apps") || !toolNames.includes("close_app")) {
+        return {
+          role: "assistant",
+          content:
+            "当前没有「应用结束」权限。请到 设置 › 插件 › AI 工具权限，先开启「应用结束」大类，再按需开启「查看运行中的应用」与「结束应用」。",
+        };
+      }
       if (tools >= 2) {
         return { role: "assistant", content: "已结束「微信」，共关闭 2 个进程。" };
       }

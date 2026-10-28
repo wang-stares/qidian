@@ -39,6 +39,7 @@ import {
 import type {
   AccentChoice,
   AiChatMessage,
+  AiPermissions,
   AiProgress,
   AiStatus,
   AiToolCall,
@@ -221,6 +222,8 @@ interface UiState {
   aiInstalled: boolean;
   aiStatus: AiStatus | null;
   aiMessages: AiChatMessage[];
+  /** 最近一次 search_apps 返回的应用 id，用于强制「先搜索再启动」。 */
+  aiSearchIds: string[];
   aiInput: string;
   aiBusy: boolean;
   aiProgress: AiProgress | null;
@@ -376,6 +379,7 @@ const state: UiState = {
   aiInstalled: false,
   aiStatus: null,
   aiMessages: [],
+  aiSearchIds: [],
   aiInput: "",
   aiBusy: false,
   aiProgress: null,
@@ -2233,6 +2237,7 @@ function pluginsPanel(): string {
         }</div>
       </div>
     </div>
+    ${state.aiEnabled || state.aiInstalled ? aiPermissionPanel() : ""}
   </section>`;
 }
 
@@ -2398,6 +2403,7 @@ const AI_SYSTEM_PROMPT =
   "当用户要求关闭、退出或结束后台应用时，先调用 list_running_apps 找到对应 app 键名，再调用 close_app；" +
   "close_app 会向用户弹出确认卡，用户拒绝时不要重复尝试。" +
   "只有在用户明确要求修改设置时才调用 open_settings。" +
+  "你只会收到用户已授权的工具；未出现的工具表示用户禁止，不要假装调用或声称已执行。" +
   "你不能执行 shell、删除文件或修改系统；遇到这类请求要拒绝并说明原因。" +
   "不要声称自己联网，也不要输出工具调用 JSON 让用户手动执行。";
 
@@ -2473,6 +2479,104 @@ const AI_TOOLS = [
   },
 ];
 
+const AI_TOOL_LABELS: Record<string, string> = {
+  search_apps: "搜索应用",
+  launch_app: "启动应用",
+  list_running_apps: "查看运行中的应用",
+  close_app: "结束应用",
+  open_settings: "打开设置页",
+};
+
+function aiToolAllowed(name: string): boolean {
+  const permissions = state.settings.aiPermissions;
+  switch (name) {
+    case "search_apps":
+      return permissions.appLaunch && permissions.appSearch;
+    case "launch_app":
+      return permissions.appLaunch && permissions.appStart;
+    case "list_running_apps":
+      return permissions.appControl && permissions.processList;
+    case "close_app":
+      return permissions.appControl && permissions.processClose;
+    case "open_settings":
+      return permissions.settingsNav && permissions.settingsOpen;
+    default:
+      return false;
+  }
+}
+
+function aiAllowedTools(): typeof AI_TOOLS {
+  return AI_TOOLS.filter((tool) => aiToolAllowed(tool.function.name));
+}
+
+function aiPermissionSwitch(key: keyof AiPermissions, label: string): string {
+  const enabled = state.settings.aiPermissions[key];
+  return `<button class="switch" role="switch" aria-checked="${enabled}" data-settings-action="ai-perm" data-key="${key}" data-focus-key="ai-perm-${key}" aria-label="${label}"></button>`;
+}
+
+function aiPermissionPanel(): string {
+  const permissions = state.settings.aiPermissions;
+  const groups: Array<{
+    key: keyof AiPermissions;
+    title: string;
+    desc: string;
+    children: Array<[keyof AiPermissions, string, string]>;
+  }> = [
+    {
+      key: "appLaunch",
+      title: "应用启动",
+      desc: "允许模型搜索本机应用并启动它们。",
+      children: [
+        ["appSearch", "搜索应用", "读取应用索引并返回候选，不启动任何程序。"],
+        ["appStart", "启动应用", "启动搜索候选里的应用。"],
+      ],
+    },
+    {
+      key: "appControl",
+      title: "应用结束",
+      desc: "允许模型查看运行中的应用并结束它们。",
+      children: [
+        ["processList", "查看运行中的应用", "列出非系统进程、发布者与内存占用。"],
+        ["processClose", "结束应用", "结束该应用的全部进程；执行前仍会弹出确认卡。"],
+      ],
+    },
+    {
+      key: "settingsNav",
+      title: "设置导航",
+      desc: "允许模型打开设置页。",
+      children: [["settingsOpen", "打开设置页", "跳转到外观、应用、关于等设置页。"]],
+    },
+  ];
+  return `<div class="settings-section">
+    <h3 class="settings-section-title">AI 工具权限</h3>
+    <p class="settings-section-desc">大类关闭时，其下小类立即失效；只有已授权的工具会发送给模型。即使模型伪造未授权调用，也不会执行。</p>
+    <div class="settings-card ai-perm-card">
+      ${groups
+        .map(
+          (group) => `<div class="ai-perm-group">
+            <div class="setting-row">
+              <div class="setting-copy"><div class="setting-title">${group.title}</div><div class="setting-desc">${group.desc}</div></div>
+              <div class="setting-control">${aiPermissionSwitch(group.key, group.title)}</div>
+            </div>
+            ${
+              permissions[group.key]
+                ? `<div class="ai-perm-children">${group.children
+                    .map(
+                      ([key, title, desc]) => `<div class="setting-row is-sub">
+                        <div class="setting-copy"><div class="setting-title">${title}</div><div class="setting-desc">${desc}</div></div>
+                        <div class="setting-control">${aiPermissionSwitch(key, title)}</div>
+                      </div>`,
+                    )
+                    .join("")}</div>`
+                : `<div class="ai-perm-off">已关闭 · 小类权限不可用</div>`
+            }
+          </div>`,
+        )
+        .join("")}
+    </div>
+  </div>`;
+}
+
 async function refreshAiStatus(): Promise<void> {
   try {
     state.aiStatus = await api.aiStatus();
@@ -2528,7 +2632,7 @@ function aiSetupPanel(): string {
       }>${downloading ? "正在下载…" : "下载并安装（约 1.2 GB）"}</button>
       <button class="ghost-btn" data-ai-action="refresh">重新检测</button>
     </div>
-    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败会自动换源；安装完成后完全离线。</p>
+    <p class="ai-footnote">从 GitHub Release 与 Hugging Face（含国内镜像）下载，失败会自动换源；安装完成后完全离线。下载后可在 设置 › 插件 › AI 工具权限 中调整模型能做什么。</p>
   </div>`;
 }
 
@@ -2601,6 +2705,9 @@ function aiPanel(): string {
         </div>
       </div>
       <div class="ai-head-actions">
+        <button class="ai-icon-btn" data-ai-action="permissions" title="AI 工具权限">${icon(
+          "shield",
+        )}</button>
         <button class="ai-icon-btn${state.aiSpeak ? " is-on" : ""}" data-ai-action="toggle-speak" title="${
           state.aiSpeak ? "关闭语音朗读" : "开启语音朗读"
         }">${icon("volume")}</button>
@@ -2660,6 +2767,11 @@ function aiSearchApps(query: string): Array<Record<string, string>> {
 }
 
 async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
+  if (!aiToolAllowed(call.function.name)) {
+    const label = AI_TOOL_LABELS[call.function.name] ?? call.function.name;
+    state.aiError = `已阻止「${label}」：用户未授权该权限`;
+    return { ok: false, error: "用户未授权该工具，操作已拒绝" };
+  }
   let args: Record<string, unknown> = {};
   try {
     const raw = call.function.arguments as unknown;
@@ -2673,10 +2785,14 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
     case "search_apps": {
       const query = typeof args.query === "string" ? args.query : "";
       const apps = aiSearchApps(query);
+      state.aiSearchIds = apps.map((app) => String(app.app_id));
       return { ok: true, apps, count: apps.length };
     }
     case "launch_app": {
       const id = typeof args.app_id === "string" ? args.app_id : "";
+      if (!state.aiSearchIds.includes(id)) {
+        return { ok: false, error: "只能启动 search_apps 刚返回的应用，请先搜索" };
+      }
       const app = state.apps.find((item) => item.id === id);
       if (!app) return { ok: false, error: "应用 id 不存在，请先调用 search_apps" };
       const result = await api.launch(app.id);
@@ -2779,7 +2895,7 @@ async function sendAiMessage(text: string, speak = false): Promise<void> {
           { role: "system", content: AI_SYSTEM_PROMPT },
           ...state.aiMessages.slice(-16),
         ],
-        AI_TOOLS,
+        aiAllowedTools(),
       );
       const toolCalls = Array.isArray(reply.tool_calls) ? (reply.tool_calls as AiToolCall[]) : [];
       const replyContent = typeof reply.content === "string" ? reply.content : "";
@@ -3008,6 +3124,12 @@ async function handleAiAction(action: string, element: HTMLElement): Promise<voi
     case "mic":
       void toggleAiRecording();
       return;
+    case "permissions":
+      openSettings("plugins");
+      window.setTimeout(() => {
+        document.querySelector(".ai-perm-card")?.scrollIntoView({ block: "center" });
+      }, 160);
+      return;
     case "toggle-speak":
       state.aiSpeak = !state.aiSpeak;
       if (!state.aiSpeak) window.speechSynthesis?.cancel();
@@ -3031,6 +3153,8 @@ async function handleAiAction(action: string, element: HTMLElement): Promise<voi
       state.aiPendingClose?.resolve(false);
       state.aiPendingClose = null;
       state.aiMessages = [];
+      state.aiSearchIds = [];
+      state.aiProcessGroups = [];
       state.aiError = null;
       refreshActive();
       return;
@@ -7733,6 +7857,23 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       closeSettings();
       setWorkspace("ai");
       return;
+    case "ai-perm": {
+      const key = actionEl.dataset.key as keyof AiPermissions | undefined;
+      if (!key) return;
+      const permissions = state.settings.aiPermissions;
+      if (!(key in permissions)) return;
+      const next = !permissions[key];
+      const children: Partial<Record<keyof AiPermissions, Array<keyof AiPermissions>>> = {
+        appLaunch: ["appSearch", "appStart"],
+        appControl: ["processList", "processClose"],
+        settingsNav: ["settingsOpen"],
+      };
+      const updated = { ...permissions, [key]: next };
+      // 大类开关是强制闸门：开启时默认放行全部小类，关闭时同步清空小类。
+      for (const child of children[key] ?? []) updated[child] = next;
+      patchSettings({ aiPermissions: updated });
+      return;
+    }
     case "plugins-refresh":
       void loadModules();
       return;

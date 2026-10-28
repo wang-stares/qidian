@@ -7907,3 +7907,39 @@ mark {
 .ai-confirm .primary-btn:hover {
   background: #a83232;
 }
+
+/* AI 工具权限：大类 + 小类 */
+.ai-perm-card {
+  margin-top: 10px;
+}
+
+.ai-perm-group + .ai-perm-group {
+  border-top: 1px solid var(--divider);
+}
+
+.ai-perm-children {
+  margin: 0 14px 10px 20px;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.ai-perm-children .setting-row {
+  border-top: 0;
+  padding: 7px 0;
+}
+
+.ai-perm-children .setting-title {
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.ai-perm-children .setting-desc {
+  font-size: 10px;
+}
+
+.ai-perm-off {
+  padding: 8px 16px 10px 20px;
+  color: var(--text-3);
+  font-size: 10px;
+}

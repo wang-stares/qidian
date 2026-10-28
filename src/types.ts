@@ -154,6 +154,7 @@ export interface Settings {
   scanUwp: boolean;
   includeSystemApps: boolean;
   scanInstallDirs: boolean;
+  aiPermissions: AiPermissions;
   autoRefreshHours: number;
   memoryMode: MemoryMode;
   memoryLevel: MemoryLevel;
@@ -188,6 +189,17 @@ export interface Bootstrap {
   scannedAt: number | null;
   aiEnabled: boolean;
   aiInstalled: boolean;
+}
+
+export interface AiPermissions {
+  appLaunch: boolean;
+  appSearch: boolean;
+  appStart: boolean;
+  appControl: boolean;
+  processList: boolean;
+  processClose: boolean;
+  settingsNav: boolean;
+  settingsOpen: boolean;
 }
 
 export interface AiStatus {

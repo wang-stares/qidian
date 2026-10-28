@@ -544,15 +544,22 @@ fn http_post(body: &str) -> Result<String, String> {
 
 #[cfg(windows)]
 pub fn chat(messages: Value, tools: Value) -> Result<Value, String> {
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": "qwen2.5-1.5b-instruct",
         "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
         "temperature": 0.2,
         "max_tokens": 512,
         "stream": false,
     });
+    // 所有工具都被用户关闭时不发送 tools，避免模型继续尝试函数调用。
+    if tools
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        body["tools"] = tools;
+        body["tool_choice"] = serde_json::json!("auto");
+    }
     let response = http_post(&body.to_string())?;
     let value: Value =
         serde_json::from_str(&response).map_err(|error| format!("模型响应解析失败：{error}"))?;

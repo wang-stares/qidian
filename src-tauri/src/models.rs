@@ -277,6 +277,37 @@ impl Default for CustomTheme {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct AiPermissions {
+    /// 大类：应用启动（搜索 + 启动）。
+    pub app_launch: bool,
+    pub app_search: bool,
+    pub app_start: bool,
+    /// 大类：应用结束（查看进程 + 结束进程）。
+    pub app_control: bool,
+    pub process_list: bool,
+    pub process_close: bool,
+    /// 大类：设置导航（打开设置页）。
+    pub settings_nav: bool,
+    pub settings_open: bool,
+}
+
+impl Default for AiPermissions {
+    fn default() -> Self {
+        Self {
+            app_launch: true,
+            app_search: true,
+            app_start: true,
+            app_control: false,
+            process_list: false,
+            process_close: false,
+            settings_nav: true,
+            settings_open: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub schema_version: u32,
     pub theme: String,
@@ -305,6 +336,8 @@ pub struct Settings {
     pub include_system_apps: bool,
     /// 补扫 Program Files 等安装目录，找出没有快捷方式 / 注册表记录的绿色软件。
     pub scan_install_dirs: bool,
+    /// AI 工具权限：大类 + 小类；关闭大类时该组全部失效。
+    pub ai_permissions: AiPermissions,
     pub auto_refresh_hours: u32,
     pub memory_mode: String,
     pub memory_level: String,
@@ -363,6 +396,7 @@ impl Default for Settings {
             scan_uwp: true,
             include_system_apps: false,
             scan_install_dirs: false,
+            ai_permissions: AiPermissions::default(),
             auto_refresh_hours: 12,
             memory_mode: "auto".to_string(),
             memory_level: "normal".to_string(),
