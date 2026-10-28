@@ -153,6 +153,8 @@ export const DEFAULT_SETTINGS: Settings = {
     processClose: false,
     settingsNav: true,
     settingsOpen: true,
+    systemInfo: true,
+    systemAction: true,
   },
   autoRefreshHours: 12,
   memoryMode: "auto",

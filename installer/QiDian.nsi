@@ -3,6 +3,7 @@
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "Sections.nsh"
 
 ManifestDPIAware true
 ; 启点需要读取全部用户应用、系统信息并支持深度内存释放，安装与运行都按管理员权限执行。
@@ -49,16 +50,6 @@ InstallDirRegKey HKCU "Software\QiDian" "InstallDir"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
-Function .onInit
-  SetShellVarContext current
-  IfFileExists "$PROGRAMFILES32\Microsoft\EdgeWebView\Application\*.*" webview2_ok
-  IfFileExists "$PROGRAMFILES64\Microsoft\EdgeWebView\Application\*.*" webview2_ok
-  IfFileExists "$LOCALAPPDATA\Microsoft\EdgeWebView\Application\*.*" webview2_ok
-  MessageBox MB_OKCANCEL|MB_ICONINFORMATION "未检测到 Microsoft Edge WebView2 运行时。$\r$\n$\r$\nWindows 11 默认已内置；Windows 10 请先安装 WebView2 后再运行启点。点击“确定”继续安装，或点击“取消”退出。" IDOK webview2_ok
-  Abort
-  webview2_ok:
-FunctionEnd
-
 Section "主程序（必需）" SecMain
   SectionIn RO
   SetShellVarContext current
@@ -104,6 +95,21 @@ Section /o "本地 AI 助手（可选，首次使用时按需下载）" SecAi
   WriteRegDWORD HKCU "Software\QiDian" "AiEnabled" 1
 SectionEnd
 
+; 组件页的勾选状态是唯一事实来源：取消勾选就不启用 AI。
+; 旧版本升级时只要之前启用过，.onInit 会自动回填勾选，不会误关。
+Section "-同步 AI 开关"
+  SectionGetFlags ${SecAi} $1
+  IntOp $1 $1 & ${SF_SELECTED}
+  ${If} $1 == 0
+    ClearErrors
+    ReadRegDWORD $2 HKCU "Software\QiDian" "AiEnabled"
+    ${If} $2 == 1
+      WriteRegDWORD HKCU "Software\QiDian" "AiEnabled" 0
+      DetailPrint "已取消勾选本地 AI 助手：功能关闭，已下载的模型保留在本地"
+    ${EndIf}
+  ${EndIf}
+SectionEnd
+
 ; 放在最后执行：等所有快捷方式写完后统一刷新 Explorer 图标缓存，
 ; 否则升级后开始菜单 / 任务栏 / 桌面仍可能显示旧版图标。
 Section "-刷新图标缓存"
@@ -111,10 +117,28 @@ Section "-刷新图标缓存"
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 SectionEnd
 
+; 回调必须放在 Section 之后，否则引用 ${SecAi} 时该 Section 还没有索引。
+Function .onInit
+  SetShellVarContext current
+  ; 升级安装时回填上次的选择：之前启用过 AI 就保持勾选，
+  ; 否则组件页会显示未勾选，安装后却仍是启用状态。
+  ClearErrors
+  ReadRegDWORD $0 HKCU "Software\QiDian" "AiEnabled"
+  ${If} $0 == 1
+    SectionSetFlags ${SecAi} ${SF_SELECTED}
+  ${EndIf}
+  IfFileExists "$PROGRAMFILES32\Microsoft\EdgeWebView\Application\*.*" webview2_ok
+  IfFileExists "$PROGRAMFILES64\Microsoft\EdgeWebView\Application\*.*" webview2_ok
+  IfFileExists "$LOCALAPPDATA\Microsoft\EdgeWebView\Application\*.*" webview2_ok
+  MessageBox MB_OKCANCEL|MB_ICONINFORMATION "未检测到 Microsoft Edge WebView2 运行时。$\r$\n$\r$\nWindows 11 默认已内置；Windows 10 请先安装 WebView2 后再运行启点。点击“确定”继续安装，或点击“取消”退出。" IDOK webview2_ok
+  Abort
+  webview2_ok:
+FunctionEnd
+
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "安装启点主程序、开始菜单快捷方式、应用索引与卸载程序，并以管理员权限运行。"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "在桌面创建“启点”快捷方式；默认不勾选，保持桌面干净。"
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecAi} "启用本地 AI 助手：可在应用内选择 Qwen2.5-0.5B / 1.5B / 3B，另有 Whisper 语音识别，全部在本机运行。安装包不包含模型，未下载时不占用磁盘与内存，首次使用时再按所选模型下载。"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecAi} "启用本地 AI 助手：安装后出现在主界面顶部 AI 标签，也能在设置 › 插件里随时安装或卸载。可在应用内选择 Qwen2.5-0.5B / 1.5B / 3B，另有 Whisper 语音识别，全部在本机运行。安装包不包含模型，未下载时不占用磁盘与内存。取消勾选只关闭功能，已下载的模型保留在本地，可在应用内删除。"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"

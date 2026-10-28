@@ -139,6 +139,45 @@ fn ai_remove(state: State<'_, AppState>, ai: State<'_, ai::AiState>) -> Result<(
     ai::remove(&state.paths, &ai)
 }
 
+/// 供 AI 工具「打开网页」使用：只放行 http/https，避免被当成任意命令执行器。
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    open_external_url(&url)
+}
+
+#[cfg(windows)]
+fn open_external_url(url: &str) -> Result<(), String> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("只允许打开 http/https 链接".to_string());
+    }
+    let target = windows::core::HSTRING::from(trimmed);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR::from_raw(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW 返回值小于等于 32 表示失败，按指针地址判断。
+    if result.0 as isize <= 32 {
+        return Err("系统没有可以打开这个链接的程序".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_external_url(_url: &str) -> Result<(), String> {
+    Err("仅支持 Windows".to_string())
+}
+
 #[tauri::command]
 async fn prune_missing_apps(app: tauri::AppHandle) -> Result<Vec<AppEntry>, String> {
     let handle = app.clone();
@@ -1486,6 +1525,7 @@ fn refresh_tray_menu(app: &tauri::AppHandle) {
 /// 插件安装后的运行时启停。安装状态文件由 modules 写入，这里只负责真正生效的副作用。
 fn module_install_hook(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     match id {
+        "ai" => ai::set_enabled(true),
         "memory" => {
             MEMORY_ACTIVE.store(true, Ordering::SeqCst);
             memory::init(&module_base(app));
@@ -1510,6 +1550,14 @@ fn module_install_hook(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
 
 fn module_uninstall_hook(app: &tauri::AppHandle, id: &str) {
     match id {
+        "ai" => {
+            // 卸载插件同时删除已下载的模型，避免留下几个 GB 的孤儿文件。
+            if let Some(state) = app.try_state::<AppState>() {
+                let ai_state = app.state::<ai::AiState>();
+                let _ = ai::remove(&state.paths, &ai_state);
+            }
+            let _ = ai::set_enabled(false);
+        }
         "memory" => {
             MEMORY_ACTIVE.store(false, Ordering::SeqCst);
             wake_memory_monitor();
@@ -1677,6 +1725,15 @@ pub fn run() {
             app.manage(ai::AiState::default());
             memory::init(&base);
 
+            // 兼容旧版本：安装器勾选过 AI（AiEnabled=1）但没有插件安装记录时补写，
+            // 避免升级后 AI 页突然消失；未勾选且无记录的机器什么都不会创建。
+            if ai::enabled() && !modules::is_installed(&base, "ai") {
+                let _ = modules::install(app.handle(), &base, "ai");
+            } else if !ai::enabled() && modules::is_installed(&base, "ai") {
+                // 安装时取消了勾选或其他途径关掉了 AI：去掉插件记录，顶部标签随之消失。
+                modules::drop_record(&base, "ai");
+            }
+
             // 显式设置窗口图标：避免系统图标缓存或旧实例导致任务栏继续显示旧版图标。
             if let Some(window) = app.get_webview_window("main") {
                 if let Ok(icon) =
@@ -1729,6 +1786,7 @@ pub fn run() {
             ai_chat,
             ai_transcribe,
             ai_remove,
+            open_external,
             prune_missing_apps,
             scan_apps,
             load_icons,

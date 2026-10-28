@@ -131,6 +131,7 @@ const WORKSPACE_TABS: WorkspaceMeta[] = [
     id: "ai",
     label: "AI",
     glyph: "sparkle",
+    moduleId: "ai",
     title: "AI 助手",
     description: "本地模型问答、应用操作与语音对话",
   },
@@ -1109,7 +1110,11 @@ function renderAll(): void {
 
 function installedWorkspaceTabs(): WorkspaceMeta[] {
   return WORKSPACE_TABS.filter((tab) => {
-    if (tab.id === "ai") return state.aiEnabled || state.aiInstalled;
+    if (tab.id === "ai") {
+      // 插件列表还没读回来时先用旧偏好兜底，避免启动瞬间 AI 标签闪烁。
+      if (!state.modulesLoaded) return state.aiEnabled || state.aiInstalled;
+      return moduleReady("ai");
+    }
     return !tab.moduleId || moduleReady(tab.moduleId);
   });
 }
@@ -1188,6 +1193,9 @@ function renderSurface(): void {
 function refreshActive(): void {
   if (state.settingsOpen) {
     renderSurfaceTabs();
+    // 在设置里卸载当前插件时，workspace 会被纠正回启动台，
+    // 这里同步重渲染内容区，避免关闭设置后还残留已卸载页面的 DOM。
+    renderSurface();
     renderSettings();
     return;
   }
@@ -1197,12 +1205,8 @@ function refreshActive(): void {
 }
 
 function setWorkspace(id: WorkspaceTab): void {
-  if (id !== "launcher" && id !== "ai" && !moduleReady(id as ModuleId)) {
+  if (id !== "launcher" && state.modulesLoaded && !moduleReady(id as ModuleId)) {
     showToast(`${moduleStatus(id as ModuleId)?.name ?? "该功能"}插件未安装，请在设置 › 插件中安装`, "info");
-    id = "launcher";
-  }
-  if (id === "ai" && !state.aiEnabled && !state.aiInstalled) {
-    showToast("本地 AI 助手未启用，请在设置 › 插件中启用", "info");
     id = "launcher";
   }
   if (state.workspace === id) {
@@ -2131,6 +2135,7 @@ function renderInspector(): void {
 /* ── plugins ──────────────────────────────────────────────────── */
 
 const MODULE_GLYPH: Record<ModuleId, string> = {
+  ai: "sparkle",
   background: "shield",
   performance: "monitor",
   optimize: "zap",
@@ -2140,6 +2145,7 @@ const MODULE_GLYPH: Record<ModuleId, string> = {
 };
 
 const MODULE_UNINSTALL_NOTE: Record<ModuleId, string> = {
+  ai: "卸载后会立即结束本地模型进程，并删除已下载的模型与运行时（最多几个 GB），顶部 AI 标签消失；重新安装需要重新下载模型。",
   background: "卸载后启动项与进程列表不可用，已经改过的自启动设置会保留。",
   performance: "卸载后体检入口停止工作，已记录的健康评分与清理记录保留。",
   optimize: "卸载后一键优化、临时文件清理、电源计划、DNS 与深层内存清理入口停止工作；已应用的注册表优化不会自动回滚，可在重装后还原。",
@@ -2220,28 +2226,11 @@ function pluginsPanel(): string {
 
   return `<section class="settings-section">
     <h3 class="settings-section-title">插件</h3>
-    <p class="settings-section-desc">启动应用内置；后台、性能、内存、应用管理安装后出现在主界面顶部标签，启动与托盘安装后在设置 › 启动中配置。卸载后立即停用并释放常驻内存。</p>
+    <p class="settings-section-desc">启动应用内置；后台、性能、内存、应用管理、本地 AI 助手安装后出现在主界面顶部标签，启动与托盘安装后在设置 › 启动中配置。卸载后立即停用并释放常驻内存。</p>
     <div class="plugin-summary">${icon("box")}已安装 ${installed.length}/${state.modules.length} · 插件数据 ${formatMemory(
       totalBytes,
     )}</div>
     <div class="plugin-list">${cards}</div>
-    <div class="settings-card" style="margin-top:14px">
-      <div class="setting-row">
-        <div class="setting-copy">
-          <div class="setting-title">本地 AI 助手</div>
-          <div class="setting-desc">Qwen2.5-1.5B + Whisper：问答、启动应用与语音对话，下载后完全离线。${
-            state.aiInstalled ? " 已安装。" : state.aiEnabled ? " 已启用，等待下载组件。" : ""
-          }</div>
-        </div>
-        <div class="setting-control">${
-          state.aiInstalled
-            ? `<button class="ghost-btn" data-settings-action="ai-open">打开 AI 助手</button>`
-            : state.aiEnabled
-              ? `<button class="ghost-btn" data-settings-action="ai-open">前往下载</button>`
-              : `<button class="primary-btn" data-settings-action="ai-enable">启用</button>`
-        }</div>
-      </div>
-    </div>
     ${state.aiEnabled || state.aiInstalled ? aiPermissionPanel() : ""}
   </section>`;
 }
@@ -2286,6 +2275,10 @@ async function installModule(id: ModuleId): Promise<void> {
     }
     if (id === "memory") void loadMemoryStatus();
     if (id === "boot") loadBootState();
+    if (id === "ai") {
+      state.aiEnabled = true;
+      void refreshAiStatus();
+    }
   } catch (error) {
     showToast(`插件安装失败：${String(error)}`, "error");
   } finally {
@@ -2325,6 +2318,13 @@ async function uninstallModule(id: ModuleId): Promise<void> {
       state.memoryStatus = null;
       state.memoryTop = null;
       state.memorySqueezed = false;
+    }
+    if (id === "ai") {
+      state.aiEnabled = false;
+      state.aiStatus = null;
+      state.aiInstalled = false;
+      state.aiMessages = [];
+      if (state.workspace === "ai") state.workspace = "launcher";
     }
     if (id === "cleanup") {
       state.cleanupScan = null;
@@ -2410,8 +2410,10 @@ const AI_SYSTEM_PROMPT =
   "当用户要求关闭、退出或结束后台应用时，先调用 list_running_apps 找到对应 app 键名，再调用 close_app；" +
   "close_app 会向用户弹出确认卡，用户拒绝时不要重复尝试。" +
   "只有在用户明确要求修改设置时才调用 open_settings。" +
+  "用户问内存或电脑状态时调用 system_info；明确要求释放内存时调用 free_memory；" +
+  "用户给出网址或要求打开某个网页时调用 open_url；要求切换深色 / 浅色模式时调用 set_theme。" +
   "你只会收到用户已授权的工具；未出现的工具表示用户禁止，不要假装调用或声称已执行。" +
-  "你不能执行 shell、删除文件或修改系统；遇到这类请求要拒绝并说明原因。" +
+  "你不能执行 shell 命令或删除文件；遇到这类请求要拒绝并说明原因。" +
   "不要声称自己联网，也不要输出工具调用 JSON 让用户手动执行。";
 
 const AI_TOOLS = [
@@ -2487,6 +2489,57 @@ const AI_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "system_info",
+      description:
+        "读取本机系统状态：物理内存总量、已用与可用、提交内存、空闲时长。用户问「内存多少」「电脑状态怎么样」时使用。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "free_memory",
+      description:
+        "释放物理内存：整理启点自身工作集并清理系统缓存。用户明确说「释放内存 / 清理内存 / 电脑卡了」时使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            enum: ["self", "system"],
+            description: "self 只释放启点自身；system 同时清理系统缓存，需要管理员权限",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_url",
+      description: "用系统默认浏览器打开网页，只支持 http/https 链接。",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string", description: "完整网址，例如 https://www.bing.com" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_theme",
+      description: "切换启点的明暗模式。",
+      parameters: {
+        type: "object",
+        properties: { mode: { type: "string", enum: ["light", "dark", "system"] } },
+        required: ["mode"],
+      },
+    },
+  },
 ];
 
 const AI_TOOL_LABELS: Record<string, string> = {
@@ -2495,6 +2548,10 @@ const AI_TOOL_LABELS: Record<string, string> = {
   list_running_apps: "查看运行中的应用",
   close_app: "结束应用",
   open_settings: "打开设置页",
+  system_info: "读取系统状态",
+  free_memory: "释放内存",
+  open_url: "打开网页",
+  set_theme: "切换明暗模式",
 };
 
 function aiToolAllowed(name: string): boolean {
@@ -2510,6 +2567,12 @@ function aiToolAllowed(name: string): boolean {
       return permissions.appControl && permissions.processClose;
     case "open_settings":
       return permissions.settingsNav && permissions.settingsOpen;
+    case "system_info":
+      return permissions.systemInfo;
+    case "free_memory":
+    case "open_url":
+    case "set_theme":
+      return permissions.systemAction;
     default:
       return false;
   }
@@ -2556,6 +2619,18 @@ function aiPermissionPanel(): string {
       desc: "允许模型打开设置页。",
       children: [["settingsOpen", "打开设置页", "跳转到外观、应用、关于等设置页。"]],
     },
+    {
+      key: "systemInfo",
+      title: "系统信息",
+      desc: "允许模型读取内存、提交内存与空闲时长等本机状态。",
+      children: [],
+    },
+    {
+      key: "systemAction",
+      title: "系统操作",
+      desc: "允许模型释放内存、用默认浏览器打开网页、切换明暗模式。",
+      children: [],
+    },
   ];
   return `<div class="settings-section">
     <h3 class="settings-section-title">AI 工具权限</h3>
@@ -2569,16 +2644,18 @@ function aiPermissionPanel(): string {
               <div class="setting-control">${aiPermissionSwitch(group.key, group.title)}</div>
             </div>
             ${
-              permissions[group.key]
-                ? `<div class="ai-perm-children">${group.children
-                    .map(
-                      ([key, title, desc]) => `<div class="setting-row is-sub">
+              group.children.length === 0
+                ? ""
+                : permissions[group.key]
+                  ? `<div class="ai-perm-children">${group.children
+                      .map(
+                        ([key, title, desc]) => `<div class="setting-row is-sub">
                         <div class="setting-copy"><div class="setting-title">${title}</div><div class="setting-desc">${desc}</div></div>
                         <div class="setting-control">${aiPermissionSwitch(key, title)}</div>
                       </div>`,
-                    )
-                    .join("")}</div>`
-                : `<div class="ai-perm-off">已关闭 · 小类权限不可用</div>`
+                      )
+                      .join("")}</div>`
+                  : `<div class="ai-perm-off">已关闭 · 小类权限不可用</div>`
             }
           </div>`,
         )
@@ -2974,6 +3051,53 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
       openSettings(target);
       return { ok: true, section: target };
     }
+    case "system_info": {
+      const status = await api.memoryStatus();
+      return {
+        ok: true,
+        memory_total_bytes: status.systemTotalBytes,
+        memory_available_bytes: status.systemAvailBytes,
+        memory_used_percent: status.systemUsedPercent,
+        commit_used_percent: status.systemCommitUsedPercent,
+        battery_percent: status.batteryPercent,
+        idle_seconds: status.userIdleSeconds,
+        self_working_set_bytes: status.selfWorkingSetBytes,
+      };
+    }
+    case "free_memory": {
+      const before = await api.memoryStatus();
+      await api.memoryTrim();
+      if ((args.scope as string | undefined) === "system") {
+        await api.memoryPurgeSystem();
+      }
+      const after = await api.memoryStatus();
+      const freed = after.systemAvailBytes - before.systemAvailBytes;
+      return {
+        ok: true,
+        scope: (args.scope as string | undefined) === "system" ? "system" : "self",
+        freed_bytes: Math.max(freed, 0),
+        available_bytes: after.systemAvailBytes,
+        used_percent: after.systemUsedPercent,
+      };
+    }
+    case "open_url": {
+      const raw = typeof args.url === "string" ? args.url.trim() : "";
+      const url = /^[a-z]+:\/\//i.test(raw) ? raw : raw ? `https://${raw}` : "";
+      if (!/^https?:\/\//i.test(url)) {
+        return { ok: false, error: "请提供以 http:// 或 https:// 开头的网址" };
+      }
+      try {
+        await api.openExternal(url);
+        return { ok: true, url };
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
+    }
+    case "set_theme": {
+      const mode = args.mode === "light" || args.mode === "dark" ? args.mode : "system";
+      patchSettings({ colorMode: mode as Settings["colorMode"] });
+      return { ok: true, mode };
+    }
     default:
       return { ok: false, error: `未知工具：${call.function.name}` };
   }
@@ -3111,19 +3235,66 @@ async function tryDirectLaunch(text: string): Promise<boolean> {
   if (!query || query.length > 24) return false;
   const resolved = resolveAiApp(query);
   if (!resolved.app) return false;
+  return runDirectReply(body, async () => {
+    const result = await api.launch(resolved.app!.id);
+    return result.ok
+      ? `已为你启动「${resolved.app!.name}」。`
+      : `启动「${resolved.app!.name}」失败：${result.error ?? "未知原因"}`;
+  });
+}
+
+/** 不需要模型也能完成的明确指令：释放内存、打开网址、切换明暗模式。 */
+const AI_FREE_RE =
+  /^(?:帮我|请|麻烦)?\s*(?:清理|释放|整理)(?:一下)?\s*(?:内存|内存占用|运行内存)[。.!！]?$/;
+const AI_URL_RE = /^(?:打开|访问|浏览)\s*(https?:\/\/\S+|(?:[\w-]+\.)+[a-z]{2,}\S*)[。.!！]?$/i;
+const AI_THEME_DARK_RE =
+  /^(?:切换(?:到|成)|改用|换成|开启)?\s*(?:深色|暗色|夜间)(?:模式|主题)?[。.!！]?$/;
+const AI_THEME_LIGHT_RE =
+  /^(?:切换(?:到|成)|改用|换成|开启)?\s*(?:浅色|亮色|日间)(?:模式|主题)?[。.!！]?$/;
+
+async function tryDirectCommand(text: string): Promise<boolean> {
+  const body = text.trim();
+  if (AI_FREE_RE.test(body) && aiToolAllowed("free_memory")) {
+    return runDirectReply(body, async () => {
+      const before = await api.memoryStatus();
+      await api.memoryTrim();
+      await api.memoryPurgeSystem();
+      const after = await api.memoryStatus();
+      const freed = Math.max(after.systemAvailBytes - before.systemAvailBytes, 0);
+      return freed > 0
+        ? `已释放 ${formatBytes(freed)} 内存，当前可用 ${formatBytes(after.systemAvailBytes)}。`
+        : `内存已经很宽裕，当前可用 ${formatBytes(after.systemAvailBytes)}。`;
+    });
+  }
+  const url = body.match(AI_URL_RE)?.[1];
+  if (url && aiToolAllowed("open_url")) {
+    const full = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    return runDirectReply(body, async () => {
+      await api.openExternal(full);
+      return `已用默认浏览器打开 ${full}`;
+    });
+  }
+  if (AI_THEME_DARK_RE.test(body) || AI_THEME_LIGHT_RE.test(body)) {
+    const mode = AI_THEME_DARK_RE.test(body) ? "dark" : "light";
+    return runDirectReply(body, async () => {
+      patchSettings({ colorMode: mode });
+      return mode === "dark" ? "已切换到深色模式。" : "已切换到浅色模式。";
+    });
+  }
+  return false;
+}
+
+/** 直接执行明确指令：把用户消息与结果写进对话，不经过模型。 */
+async function runDirectReply(body: string, action: () => Promise<string>): Promise<boolean> {
   state.aiInput = "";
   state.aiMessages.push({ role: "user", content: body });
   state.aiBusy = true;
   state.aiError = null;
   refreshActive();
   try {
-    const result = await api.launch(resolved.app.id);
-    state.aiMessages.push({
-      role: "assistant",
-      content: result.ok
-        ? `已为你启动「${resolved.app.name}」。`
-        : `启动「${resolved.app.name}」失败：${result.error ?? "未知原因"}`,
-    });
+    state.aiMessages.push({ role: "assistant", content: await action() });
+  } catch (error) {
+    state.aiMessages.push({ role: "assistant", content: `操作失败：${String(error)}` });
   } finally {
     state.aiBusy = false;
     refreshActive();
@@ -3136,6 +3307,7 @@ async function sendAiMessage(text: string, speak = false): Promise<void> {
   const content = text.trim();
   if (!content || state.aiBusy) return;
   if (await tryDirectLaunch(content)) return;
+  if (await tryDirectCommand(content)) return;
   state.aiInput = "";
   state.aiError = null;
   state.aiMessages.push({ role: "user", content });
@@ -8137,12 +8309,13 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     }
     case "ai-enable": {
       try {
-        await api.aiSetEnabled(true);
+        state.modules = await api.installModule("ai");
+        state.modulesLoaded = true;
         state.aiEnabled = true;
         closeSettings();
         setWorkspace("ai");
         void refreshAiStatus();
-        showToast("已启用本地 AI 助手，请在 AI 页下载组件", "success");
+        showToast("已安装本地 AI 助手，请在 AI 页选择模型并下载", "success");
       } catch (error) {
         showToast(`启用失败：${String(error)}`, "error");
       }

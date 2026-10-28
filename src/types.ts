@@ -200,6 +200,10 @@ export interface AiPermissions {
   processClose: boolean;
   settingsNav: boolean;
   settingsOpen: boolean;
+  /** 读取内存、磁盘等系统状态。 */
+  systemInfo: boolean;
+  /** 释放内存、打开网页、切换主题等会改变系统或界面的操作。 */
+  systemAction: boolean;
 }
 
 export interface AiModelInfo {
@@ -436,6 +440,7 @@ export interface CategoryMeta {
 }
 
 export type ModuleId =
+  | "ai"
   | "background"
   | "performance"
   | "optimize"

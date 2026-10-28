@@ -289,6 +289,10 @@ pub struct AiPermissions {
     /// 大类：设置导航（打开设置页）。
     pub settings_nav: bool,
     pub settings_open: bool,
+    /// 大类：系统信息（读取内存、磁盘与 CPU 占用）。
+    pub system_info: bool,
+    /// 大类：系统操作（释放内存、打开网页、切换主题）。
+    pub system_action: bool,
 }
 
 impl Default for AiPermissions {
@@ -302,6 +306,8 @@ impl Default for AiPermissions {
             process_close: false,
             settings_nav: true,
             settings_open: true,
+            system_info: true,
+            system_action: true,
         }
     }
 }

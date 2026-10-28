@@ -4,6 +4,27 @@ use std::path::{Path, PathBuf};
 
 const MODULES: &[ModuleDef] = &[
     ModuleDef {
+        id: "ai",
+        name: "本地 AI 助手",
+        version: "1.5.6",
+        description: "完全在本机运行的 AI 助手：按电脑性能选择 Qwen2.5-0.5B / 1.5B / 3B，可搜索并启动应用、结束后台应用、读取系统状态、释放内存、打开网页、切换主题，还支持 Whisper 语音输入与朗读。未下载模型时不占用磁盘与内存。",
+        features: &[
+            "本地模型问答",
+            "0.5B / 1.5B / 3B 可选",
+            "按需下载",
+            "输入时预热",
+            "启动应用",
+            "结束应用",
+            "系统状态",
+            "释放内存",
+            "打开网页",
+            "切换主题",
+            "语音输入",
+            "语音朗读",
+        ],
+        manifest: include_str!("../resources/modules/ai/manifest.json"),
+    },
+    ModuleDef {
         id: "background",
         name: "后台管理",
         version: "1.2.0",
@@ -118,6 +139,11 @@ pub fn list(base: &Path) -> Vec<ModuleStatus> {
 
 pub fn is_installed(base: &Path, id: &str) -> bool {
     module_dir(base, id).join("install.json").is_file()
+}
+
+/// 只删除插件的安装记录，不触发卸载副作用（用于外部已经关闭该功能的场景）。
+pub fn drop_record(base: &Path, id: &str) {
+    let _ = fs::remove_dir_all(module_dir(base, id));
 }
 
 pub fn get(base: &Path, id: &str) -> Option<ModuleStatus> {

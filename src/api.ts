@@ -223,13 +223,15 @@ async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): 
 const mockBridge = {
   async bootstrap(): Promise<Bootstrap> {
     await sleep(240);
-    const { MOCK_APPS } = await mockModule();
+    const { MOCK_APPS, mockModuleInstalled } = await mockModule();
+    // 预览环境与桌面端一致：AI 是否启用完全由插件安装状态决定。
+    const aiInstalled = mockModuleInstalled("ai");
     return {
       settings: await loadMockSettings(),
       apps: MOCK_APPS,
       scannedAt: Date.now() - 42 * 60 * 1000,
-      aiEnabled: true,
-      aiInstalled: mockInstalledModel !== null,
+      aiEnabled: aiInstalled,
+      aiInstalled: aiInstalled && mockInstalledModel !== null,
     };
   },
 
@@ -319,10 +321,12 @@ const mockBridge = {
 
   async aiStatus(): Promise<AiStatus> {
     await sleep(80);
+    const { mockModuleInstalled } = await mockModule();
+    const enabled = mockModuleInstalled("ai");
     const spec = MOCK_MODELS.find((item) => item.id === mockAiModel) ?? MOCK_MODELS[1];
     return {
-      enabled: true,
-      installed: mockInstalledModel === spec.id,
+      enabled,
+      installed: enabled && mockInstalledModel === spec.id,
       running: mockAiRunning,
       downloadedBytes: mockInstalledModel === spec.id ? AI_TOTAL_BYTES : 0,
       totalBytes: spec.bytes + MOCK_WHISPER_BYTES,
@@ -647,6 +651,12 @@ const mockBridge = {
     return Math.round(1.4 * 1024 ** 3);
   },
 
+  async openExternal(url: string): Promise<void> {
+    await sleep(60);
+    // 预览环境不真的拉起浏览器，只记录最后一次调用，方便排查。
+    localStorage.setItem("qidian.mock.lastUrl", url);
+  },
+
   async autostartStatus(): Promise<boolean> {
     return mockAutostart;
   },
@@ -938,6 +948,10 @@ const tauriBridge = {
 
   memoryPurgeSystem(): Promise<number> {
     return tauriInvoke<number>("memory_purge_system");
+  },
+
+  openExternal(url: string): Promise<void> {
+    return tauriInvoke<void>("open_external", { url });
   },
 
   setAutostart(enabled: boolean): Promise<boolean> {
