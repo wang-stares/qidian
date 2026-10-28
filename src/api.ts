@@ -316,12 +316,46 @@ const mockBridge = {
   },
 
   async aiChat(messages: AiChatMessage[]): Promise<Record<string, unknown>> {
-    void messages;
-    await sleep(700);
+    await sleep(500);
+    const lastUser = [...messages].reverse().find((message) => message.role === "user");
+    const tools = messages.filter((message) => message.role === "tool").length;
+    const text = lastUser?.content ?? "";
+    if (text.includes("关闭") && text.includes("微信")) {
+      if (tools >= 2) {
+        return { role: "assistant", content: "已结束「微信」，共关闭 2 个进程。" };
+      }
+      if (tools === 1) {
+        return {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "mock-close",
+              type: "function",
+              function: { name: "close_app", arguments: JSON.stringify({ app: "wechat" }) },
+            },
+          ],
+        };
+      }
+      return {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "mock-list",
+            type: "function",
+            function: {
+              name: "list_running_apps",
+              arguments: JSON.stringify({ query: "微信" }),
+            },
+          },
+        ],
+      };
+    }
     return {
       role: "assistant",
       content:
-        "这是浏览器预览模式。桌面版会把问题交给本地 Qwen2.5-1.5B 模型，并且可以调用应用搜索、启动应用与打开设置。",
+        "这是浏览器预览模式。桌面版会把问题交给本地 Qwen2.5-1.5B 模型，并且可以调用应用搜索、启动应用、结束应用与打开设置。",
     };
   },
 

@@ -227,6 +227,11 @@ interface UiState {
   aiError: string | null;
   aiRecording: boolean;
   aiSpeak: boolean;
+  aiProcessGroups: ProcessGroup[];
+  aiPendingClose: {
+    group: ProcessGroup;
+    resolve: (allowed: boolean) => void;
+  } | null;
   editingCategoryId: string | null;
   pendingCategoryDelete: string | null;
   newCategoryDraft: string;
@@ -377,6 +382,8 @@ const state: UiState = {
   aiError: null,
   aiRecording: false,
   aiSpeak: false,
+  aiProcessGroups: [],
+  aiPendingClose: null,
   editingCategoryId: null,
   pendingCategoryDelete: null,
   newCategoryDraft: "",
@@ -2387,8 +2394,11 @@ const AI_PHASES: Record<string, string> = {
 const AI_SYSTEM_PROMPT =
   "你是启点（QiDian）内置的本地 AI 助手。回答要简洁、直接，使用简体中文。" +
   "当用户要求打开、启动或查找某个应用时，必须先调用 search_apps 获取候选，再调用 launch_app 启动；" +
-  "候选为空时如实说明，不要编造应用。只有在用户明确要求修改设置时才调用 open_settings。" +
-  "你不能执行 shell、删除文件、结束进程或修改系统；遇到这类请求要拒绝并说明原因。" +
+  "候选为空时如实说明，不要编造应用。" +
+  "当用户要求关闭、退出或结束后台应用时，先调用 list_running_apps 找到对应 app 键名，再调用 close_app；" +
+  "close_app 会向用户弹出确认卡，用户拒绝时不要重复尝试。" +
+  "只有在用户明确要求修改设置时才调用 open_settings。" +
+  "你不能执行 shell、删除文件或修改系统；遇到这类请求要拒绝并说明原因。" +
   "不要声称自己联网，也不要输出工具调用 JSON 让用户手动执行。";
 
 const AI_TOOLS = [
@@ -2414,6 +2424,33 @@ const AI_TOOLS = [
         type: "object",
         properties: { app_id: { type: "string", description: "search_apps 返回的应用 id" } },
         required: ["app_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_running_apps",
+      description:
+        "列出正在运行的桌面应用（已过滤系统与受保护进程），返回 app 键名、显示名、发布者与进程数。结束应用前必须先调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "可选：按应用名称或发布者过滤" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_app",
+      description:
+        "结束 list_running_apps 返回的某个应用的全部进程。执行前会向用户弹出确认卡，必须使用返回的 app 键名。",
+      parameters: {
+        type: "object",
+        properties: { app: { type: "string", description: "list_running_apps 返回的 app 键名" } },
+        required: ["app"],
       },
     },
   },
@@ -2524,6 +2561,25 @@ function aiMessageHtml(message: AiChatMessage): string {
   )}</div></div>`;
 }
 
+function aiCloseConfirmHtml(): string {
+  const pending = state.aiPendingClose;
+  if (!pending) return "";
+  const group = pending.group;
+  return `<div class="ai-confirm">
+    <div class="ai-confirm-copy">
+      <span class="ai-confirm-icon">${icon("power")}</span>
+      <div>
+        <strong>结束「${escapeHtml(group.title)}」？</strong>
+        <p>将结束 ${group.items.length} 个进程，未保存的内容可能丢失。</p>
+      </div>
+    </div>
+    <div class="ai-confirm-actions">
+      <button class="ghost-btn" data-ai-action="close-cancel">取消</button>
+      <button class="primary-btn" data-ai-action="close-confirm">允许结束</button>
+    </div>
+  </div>`;
+}
+
 function aiPanel(): string {
   const status = state.aiStatus;
   const installed = status?.installed ?? state.aiInstalled;
@@ -2553,6 +2609,7 @@ function aiPanel(): string {
     </header>
     <div class="ai-messages">
       ${messages || aiSuggestions()}
+      ${state.aiPendingClose ? aiCloseConfirmHtml() : ""}
       ${
         state.aiBusy
           ? `<div class="ai-typing"><span></span><span></span><span></span></div>`
@@ -2624,6 +2681,58 @@ async function runAiTool(call: AiToolCall): Promise<Record<string, unknown>> {
       if (!app) return { ok: false, error: "应用 id 不存在，请先调用 search_apps" };
       const result = await api.launch(app.id);
       return { ok: result.ok, name: app.name, error: result.error ?? "" };
+    }
+    case "list_running_apps": {
+      const processes = await api.listProcesses();
+      const groups = buildProcessGroups(processes)
+        .filter((group) => !group.protectedGroup && group.level !== "system")
+        .sort((left, right) => right.memoryBytes - left.memoryBytes);
+      state.aiProcessGroups = groups;
+      const query = typeof args.query === "string" ? args.query.toLowerCase().trim() : "";
+      const filtered = query
+        ? groups.filter((group) =>
+            `${group.title} ${group.name} ${group.publisher}`.toLowerCase().includes(query),
+          )
+        : groups;
+      return {
+        ok: true,
+        total: groups.length,
+        apps: filtered.slice(0, 12).map((group) => ({
+          app: group.key,
+          title: group.title,
+          publisher: group.publisher,
+          processes: group.items.length,
+          memory_bytes: group.memoryBytes,
+        })),
+      };
+    }
+    case "close_app": {
+      const key = typeof args.app === "string" ? args.app : "";
+      const group = state.aiProcessGroups.find((item) => item.key === key);
+      if (!group) {
+        return { ok: false, error: "找不到该应用，请先调用 list_running_apps 获取 app 键名" };
+      }
+      if (group.protectedGroup || group.level === "system") {
+        return { ok: false, error: "该进程属于系统或受保护进程，不能结束" };
+      }
+      const allowed = await new Promise<boolean>((resolve) => {
+        state.aiPendingClose = { group, resolve };
+        refreshActive();
+        scrollAiToBottom();
+      });
+      state.aiPendingClose = null;
+      refreshActive();
+      if (!allowed) return { ok: false, error: "用户取消了结束操作" };
+      const report = await api.terminateProcesses(
+        group.items.map((item) => ({ pid: item.pid, name: item.name })),
+      );
+      state.aiProcessGroups = state.aiProcessGroups.filter((item) => item.key !== key);
+      return {
+        ok: report.terminated > 0,
+        app: group.title,
+        terminated: report.terminated,
+        failed: report.failed.map((item) => item.name),
+      };
     }
     case "open_settings": {
       const section = typeof args.section === "string" ? args.section : "appearance";
@@ -2904,7 +3013,23 @@ async function handleAiAction(action: string, element: HTMLElement): Promise<voi
       if (!state.aiSpeak) window.speechSynthesis?.cancel();
       refreshActive();
       return;
+    case "close-confirm": {
+      const pending = state.aiPendingClose;
+      state.aiPendingClose = null;
+      pending?.resolve(true);
+      refreshActive();
+      return;
+    }
+    case "close-cancel": {
+      const pending = state.aiPendingClose;
+      state.aiPendingClose = null;
+      pending?.resolve(false);
+      refreshActive();
+      return;
+    }
     case "clear":
+      state.aiPendingClose?.resolve(false);
+      state.aiPendingClose = null;
       state.aiMessages = [];
       state.aiError = null;
       refreshActive();
