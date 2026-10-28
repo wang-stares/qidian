@@ -18,7 +18,7 @@ pub struct ScanOutcome {
 
 /// 缓存结构版本。扫描逻辑影响条目合并或目标格式时递增，
 /// 旧缓存会在下次启动时被忽略并自动重扫一次。
-pub const CACHE_SCHEMA: u32 = 8;
+pub const CACHE_SCHEMA: u32 = 9;
 
 pub fn scan(paths: &Paths, options: &ScanOptions, app: &AppHandle) -> Result<ScanOutcome, String> {
     #[cfg(windows)]
@@ -53,8 +53,17 @@ fn scan_windows(
     // 快捷方式解析、卸载注册表与 Store 应用三路并行，扫描耗时从相加变成取最大值。
     let (shortcut_count, registry, uwp) = std::thread::scope(|scope| {
         let registry_handle = scope.spawn(collect_registry);
-        let uwp_handle =
-            scan_uwp.then(|| scope.spawn(move || collect_uwp(include_system)));
+        let uwp_handle = scan_uwp.then(|| {
+            scope.spawn(move || {
+                // 优先直接枚举 shell:AppsFolder（开始菜单 / 任务栏搜索的数据源），
+                // 不依赖 PowerShell；失败时再退回 Get-StartApps。
+                let mut apps = collect_apps_folder(include_system);
+                if apps.is_empty() {
+                    apps = collect_uwp(include_system);
+                }
+                apps
+            })
+        });
         let shortcut_count = push_shortcuts(&mut accumulator, &shortcuts);
         let registry = registry_handle.join().unwrap_or_default();
         let uwp = uwp_handle
@@ -1221,6 +1230,96 @@ fn merge_registry(accumulator: &mut Accumulator, registry: Vec<RegistryApp>) {
 }
 
 /* ── Microsoft Store / UWP ────────────────────────────────────── */
+
+/// 直接枚举 `shell:AppsFolder`：与 Windows 开始菜单、任务栏搜索使用同一份清单。
+/// 不依赖 PowerShell，能拿到 MSIX 应用与已注册的桌面应用。
+#[cfg(windows)]
+fn collect_apps_folder(include_system: bool) -> Vec<(String, String)> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED, IBindCtx,
+    };
+    use windows::Win32::UI::Shell::{
+        IEnumShellItems, IShellItem, SHGetKnownFolderItem, BHID_EnumItems, FOLDERID_AppsFolder,
+        KF_FLAG_DEFAULT, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
+    };
+
+    /// AppsFolder 的解析名形如 `::{4234D49B-0245-4DF3-B780-3893943456E1}\<canonical>`，
+    /// 去掉前缀后才是可启动的 AUMID / .lnk 路径。
+    const APPS_FOLDER_PREFIX: &str = "::{4234d49b-0245-4df3-b780-3893943456e1}\\";
+
+    unsafe fn display_name(item: &IShellItem, mode: SIGDN) -> Option<String> {
+        let raw = item.GetDisplayName(mode).ok()?;
+        let text = raw.to_string().ok();
+        // GetDisplayName 返回 CoTaskMemAlloc 分配的字符串，必须释放。
+        CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
+        text.map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let mut result = Vec::new();
+    unsafe {
+        let folder: IShellItem =
+            match SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, HANDLE::default()) {
+                Ok(item) => item,
+                Err(_) => {
+                    if initialized {
+                        CoUninitialize();
+                    }
+                    return result;
+                }
+            };
+        let enumerator: IEnumShellItems =
+            match folder.BindToHandler::<Option<&IBindCtx>, IEnumShellItems>(None, &BHID_EnumItems) {
+                Ok(value) => value,
+                Err(_) => {
+                    if initialized {
+                        CoUninitialize();
+                    }
+                    return result;
+                }
+            };
+
+        loop {
+            let mut items: [Option<IShellItem>; 1] = [None];
+            let mut fetched = 0u32;
+            if enumerator.Next(&mut items, Some(&mut fetched)).is_err() || fetched == 0 {
+                break;
+            }
+            let Some(item) = items[0].take() else {
+                break;
+            };
+            let Some(name) = display_name(&item, SIGDN_NORMALDISPLAY) else {
+                continue;
+            };
+            let Some(parsing) = display_name(&item, SIGDN_DESKTOPABSOLUTEPARSING) else {
+                continue;
+            };
+            let lower = parsing.to_lowercase();
+            let canonical = lower
+                .strip_prefix(APPS_FOLDER_PREFIX)
+                .map(|rest| parsing[parsing.len() - rest.len()..].to_string())
+                .unwrap_or(parsing.clone());
+            let packaged = canonical.contains('!');
+            if packaged && !include_system && is_system_uwp(&name) {
+                continue;
+            }
+            // 无法确认可执行/可启动的条目跳过，避免出现点不开的应用。
+            let launchable = packaged
+                || canonical.to_lowercase().ends_with(".lnk")
+                || canonical.to_lowercase().ends_with(".exe");
+            if !launchable || is_junk_name(&name) {
+                continue;
+            }
+            result.push((name, canonical));
+        }
+    }
+    if initialized {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
 
 #[cfg(windows)]
 fn collect_uwp(include_system: bool) -> Vec<(String, String)> {
