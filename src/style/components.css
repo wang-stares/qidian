@@ -7087,3 +7087,143 @@ mark {
 .preview-mono .p-tile {
   border-radius: 1px;
 }
+
+/* ══ macOS 原生细节：毛玻璃、交通灯描边、浮层材质 ═══════════════ */
+
+/* 工具栏：统一标题栏的半透明材质，让壁纸在背后透出 */
+[data-theme="macos"] .titlebar {
+  background: color-mix(in srgb, var(--panel) 42%, transparent);
+  backdrop-filter: blur(30px) saturate(180%);
+  border-bottom: 1px solid var(--stroke);
+}
+
+/* 侧栏：Finder 式更明显的 vibrancy */
+[data-theme="macos"] .rail {
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  backdrop-filter: blur(36px) saturate(180%);
+}
+
+/* 交通灯加一圈内描边，接近 macOS 的真实质感 */
+[data-theme="macos"] .wc-btn {
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.14);
+}
+
+[data-theme="macos"] .window-controls:hover .wc-btn {
+  box-shadow:
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.18),
+    0 0 0 0.5px rgba(0, 0, 0, 0.06);
+}
+
+/* 快速启动栏：毛玻璃胶囊 */
+[data-theme="macos"] .quickbar {
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  border-color: color-mix(in srgb, #ffffff 38%, transparent);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 30px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(26px) saturate(170%);
+}
+
+/* 详情面板：Inspector 材质 */
+[data-theme="macos"] .inspector {
+  background: color-mix(in srgb, var(--panel-strong) 78%, transparent);
+  border-color: color-mix(in srgb, #ffffff 32%, transparent);
+  backdrop-filter: blur(38px) saturate(180%);
+}
+
+/* 右键菜单：更通透的浮层 */
+[data-theme="macos"] .context-menu {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--flyout-bg) 80%, transparent);
+  backdrop-filter: blur(34px) saturate(180%);
+}
+
+[data-theme="macos"] .menu-item {
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+/* Toast：macOS 通知条材质 */
+[data-theme="macos"] .toast {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--toast-bg) 88%, transparent);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+
+/* 设置面板：macOS sheet 材质，遮罩层做背景模糊 */
+[data-theme="macos"] .modal-layer {
+  background: rgba(10, 12, 16, 0.2);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+
+[data-theme="macos"] .modal {
+  border: 1px solid color-mix(in srgb, #ffffff 30%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
+  backdrop-filter: blur(42px) saturate(180%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.28) inset,
+    0 36px 90px rgba(0, 0, 0, 0.32),
+    0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+[data-mode="dark"][data-theme="macos"] .modal {
+  border-color: color-mix(in srgb, #ffffff 12%, transparent);
+  background: color-mix(in srgb, var(--panel-strong) 84%, transparent);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 40px 100px rgba(0, 0, 0, 0.66),
+    0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+/* 搜索框：内嵌高光，接近 NSSearchField */
+[data-theme="macos"] .search {
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  box-shadow:
+    inset 0 0 0 1px var(--stroke),
+    inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* 焦点环：macOS 的柔和蓝色外环 */
+[data-theme="macos"] .app-tile:focus-visible,
+[data-theme="macos"] .rail-item:focus-visible,
+[data-theme="macos"] .chip:focus-visible,
+[data-theme="macos"] .primary-btn:focus-visible,
+[data-theme="macos"] .scan-btn:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+/* 文本选择色 */
+[data-theme="macos"] ::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* 滚动条：macOS 覆盖式细条 */
+[data-theme="macos"] .content::-webkit-scrollbar,
+[data-theme="macos"] .rail-main::-webkit-scrollbar,
+[data-theme="macos"] .modal-body::-webkit-scrollbar,
+[data-theme="macos"] .inspector-body::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+[data-theme="macos"] .content::-webkit-scrollbar-thumb,
+[data-theme="macos"] .rail-main::-webkit-scrollbar-thumb,
+[data-theme="macos"] .modal-body::-webkit-scrollbar-thumb,
+[data-theme="macos"] .inspector-body::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  background-clip: content-box;
+}
+
+/* 低功耗：统一关闭本主题新增的毛玻璃 */
+.app[data-lowpower="true"][data-theme="macos"] .titlebar,
+.app[data-lowpower="true"][data-theme="macos"] .rail,
+.app[data-lowpower="true"][data-theme="macos"] .quickbar,
+.app[data-lowpower="true"][data-theme="macos"] .inspector,
+.app[data-lowpower="true"][data-theme="macos"] .context-menu,
+.app[data-lowpower="true"][data-theme="macos"] .toast,
+.app[data-lowpower="true"][data-theme="macos"] .modal,
+.app[data-lowpower="true"][data-theme="macos"] .modal-layer {
+  backdrop-filter: none;
+}
