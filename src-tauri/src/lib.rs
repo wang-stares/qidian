@@ -1672,6 +1672,15 @@ pub fn run() {
             app.manage(ai::AiState::default());
             memory::init(&base);
 
+            // 显式设置窗口图标：避免系统图标缓存或旧实例导致任务栏继续显示旧版图标。
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(icon) =
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                {
+                    let _ = window.set_icon(icon);
+                }
+            }
+
             // 除“启动应用”外的能力都以插件形式存在，只有安装后才初始化对应的常驻逻辑。
             if modules::is_installed(&base, "boot") {
                 TRAY_OK.store(setup_tray(app.handle()).is_ok(), Ordering::SeqCst);

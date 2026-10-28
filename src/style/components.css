@@ -7943,3 +7943,9 @@ mark {
   color: var(--text-3);
   font-size: 10px;
 }
+
+/* AI 页使用实底内容面，避免壁纸或旧实例透出干扰阅读 */
+.content.is-ai {
+  background: var(--surface-solid);
+  box-shadow: inset 1px 0 0 var(--divider);
+}

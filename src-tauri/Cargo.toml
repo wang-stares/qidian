@@ -1,6 +1,6 @@
 [package]
 name = "qidian"
-version = "1.5.2"
+version = "1.5.3"
 description = "A quiet, lightweight app launcher for Windows"
 authors = ["QiDian"]
 edition = "2021"
@@ -18,7 +18,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }

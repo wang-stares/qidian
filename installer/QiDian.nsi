@@ -104,6 +104,13 @@ Section /o "本地 AI 助手（可选，约 1.2 GB）" SecAi
   WriteRegDWORD HKCU "Software\QiDian" "AiEnabled" 1
 SectionEnd
 
+; 放在最后执行：等所有快捷方式写完后统一刷新 Explorer 图标缓存，
+; 否则升级后开始菜单 / 任务栏 / 桌面仍可能显示旧版图标。
+Section "-刷新图标缓存"
+  nsExec::ExecToLog '"$SYSDIR\ie4uinit.exe" -show'
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+SectionEnd
+
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "安装启点主程序、开始菜单快捷方式、应用索引与卸载程序，并以管理员权限运行。"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "在桌面创建“启点”快捷方式；默认不勾选，保持桌面干净。"
