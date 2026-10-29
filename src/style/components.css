@@ -4956,11 +4956,14 @@ mark {
 
 .mem-summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+  row-gap: 2px;
   margin: 0 2px 9px;
   color: var(--text-3);
   font-size: 9.5px;
+  line-height: 1.5;
 }
 
 .mem-summary-dot {
@@ -5145,6 +5148,71 @@ mark {
   color: var(--text-2);
   font-size: 10px;
   font-weight: 600;
+}
+
+.mem-app-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.mem-app-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 9px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.mem-app-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.mem-app-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mem-app-btn.is-icon {
+  width: 22px;
+  padding: 0;
+}
+
+.mem-app-btn.is-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.mem-app-btn.is-icon.is-on {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+[data-theme="macos"] .mem-app-btn {
+  height: 21px;
+  border: 0;
+  border-radius: 5.5px;
+  background: var(--mac-fill);
+  font-size: 9.5px;
+}
+
+[data-theme="macos"] .mem-app-btn.is-icon.is-on {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
 }
 
 .mem-top-foot {

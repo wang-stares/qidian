@@ -1070,6 +1070,29 @@ async fn memory_trim(
 }
 
 #[tauri::command]
+async fn memory_trim_app(
+    state: State<'_, AppState>,
+    name: String,
+    pids: Vec<u32>,
+) -> Result<MemoryStatus, String> {
+    require_module(&state, "memory")?;
+    let settings = state
+        .settings
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_default();
+    let label = if name.trim().is_empty() {
+        "应用".to_string()
+    } else {
+        name
+    };
+    // 逐个进程释放工作集，放到阻塞线程避免影响界面。
+    tauri::async_runtime::spawn_blocking(move || memory::trim_app(&settings, &label, &pids))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn memory_purge_system(state: State<'_, AppState>) -> Result<u64, String> {
     require_module(&state, "optimize")?;
     let base = state.paths.base.clone();
@@ -1854,6 +1877,7 @@ pub fn run() {
             memory_status,
             memory_apply,
             memory_trim,
+            memory_trim_app,
             memory_purge_system,
             quit_app,
             set_memory_saver

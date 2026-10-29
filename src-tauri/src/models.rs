@@ -360,6 +360,8 @@ pub struct Settings {
     pub memory_drop_icons: bool,
     pub memory_pause_fullscreen: bool,
     pub memory_power_aware: bool,
+    /// 「全部应用」释放工作集时跳过的应用（进程名小写，不含 .exe）。
+    pub memory_skip_apps: Vec<String>,
     pub hotkey_toggle: String,
     pub app_hotkeys: HashMap<String, String>,
     pub close_to_tray: bool,
@@ -420,6 +422,7 @@ impl Default for Settings {
             memory_drop_icons: true,
             memory_pause_fullscreen: true,
             memory_power_aware: true,
+            memory_skip_apps: Vec::new(),
             hotkey_toggle: "Ctrl+Alt+Q".to_string(),
             app_hotkeys: HashMap::new(),
             close_to_tray: true,

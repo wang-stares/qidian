@@ -1769,6 +1769,9 @@ export function mockMemoryStatus(): MemoryStatus {
     history: mockMemoryHistory,
     totalReleasedBytes: mockMemoryTotalReleased,
     todayReleasedBytes: mockMemoryTodayReleased,
+    todayPeakPercent: Math.max(usedPercent, 82),
+    todayMinAvailBytes: Math.round(MOCK_AVAIL_MEMORY * 0.72),
+    todayAdjustCount: mockMemoryAdjustCount,
     adjustCount: mockMemoryAdjustCount,
   };
 }
@@ -1810,5 +1813,12 @@ export function mockMemoryTrim(): MemoryStatus {
     mockMemoryLow ? "low" : "normal",
     Math.max(0, before - mockWorkingSet) + extra,
   );
+  return mockMemoryStatus();
+}
+
+/** 预览环境：按进程数模拟释放，单个进程约 60–120 MB。 */
+export function mockMemoryTrimApp(name: string, pids: number[]): MemoryStatus {
+  const freed = pids.length * Math.round((60 + Math.random() * 60) * 1024 ** 2);
+  pushMockMemoryAction(`释放 ${name}`, mockMemoryLow ? "low" : "normal", freed);
   return mockMemoryStatus();
 }

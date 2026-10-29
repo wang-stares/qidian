@@ -23,8 +23,14 @@ static STATS: Mutex<PersistedStats> = Mutex::new(PersistedStats {
     adjust_count: 0,
     today_at: 0,
     today_released_bytes: 0,
+    today_peak_percent: 0,
+    today_min_avail_bytes: 0,
+    today_adjust_count: 0,
 });
 static STATS_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// 今日峰值 / 最低可用每分钟最多落盘一次，避免每次刷新都写文件。
+static LAST_STATS_WRITE: AtomicU64 = AtomicU64::new(0);
+const STATS_WRITE_INTERVAL_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +51,13 @@ struct PersistedStats {
     today_at: u64,
     #[serde(default)]
     today_released_bytes: u64,
+    /// 今日内存使用率峰值与最低可用内存，用于「今日概览」。
+    #[serde(default)]
+    today_peak_percent: u32,
+    #[serde(default)]
+    today_min_avail_bytes: u64,
+    #[serde(default)]
+    today_adjust_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +92,9 @@ pub struct MemoryStatus {
     pub history: Vec<LastAction>,
     pub total_released_bytes: u64,
     pub today_released_bytes: u64,
+    pub today_peak_percent: u32,
+    pub today_min_avail_bytes: u64,
+    pub today_adjust_count: u64,
     pub adjust_count: u64,
 }
 
@@ -120,6 +136,7 @@ pub fn status(settings: &Settings) -> MemoryStatus {
     } else {
         0
     };
+    let (today_peak, today_min, today_adjust) = observe_today(&memory, now);
     MemoryStatus {
         mode: settings.memory_mode.clone(),
         level: if LOW_ACTIVE.load(Ordering::SeqCst) {
@@ -154,8 +171,52 @@ pub fn status(settings: &Settings) -> MemoryStatus {
         history,
         total_released_bytes: stats.released_bytes,
         today_released_bytes: today_released,
+        today_peak_percent: today_peak,
+        today_min_avail_bytes: today_min,
+        today_adjust_count: today_adjust,
         adjust_count: stats.adjust_count,
     }
+}
+
+/// 采样今日峰值与最低可用内存；跨天时清零。落盘按分钟节流。
+fn observe_today(memory: &MemorySnapshot, now: u64) -> (u32, u64, u64) {
+    if memory.total == 0 {
+        return (0, 0, 0);
+    }
+    let used = percent_used(memory.total, memory.avail);
+    let mut dirty = false;
+    let mut values = (0, 0, 0);
+    if let Ok(mut stats) = STATS.lock() {
+        if stats.today_at / 86_400_000 != now / 86_400_000 {
+            stats.today_at = now;
+            stats.today_released_bytes = 0;
+            stats.today_peak_percent = 0;
+            stats.today_min_avail_bytes = 0;
+            stats.today_adjust_count = 0;
+            dirty = true;
+        }
+        if used > stats.today_peak_percent {
+            stats.today_peak_percent = used;
+            dirty = true;
+        }
+        if stats.today_min_avail_bytes == 0 || memory.avail < stats.today_min_avail_bytes {
+            stats.today_min_avail_bytes = memory.avail;
+            dirty = true;
+        }
+        values = (
+            stats.today_peak_percent,
+            stats.today_min_avail_bytes,
+            stats.today_adjust_count,
+        );
+        if dirty {
+            let last = LAST_STATS_WRITE.load(Ordering::SeqCst);
+            if now.saturating_sub(last) >= STATS_WRITE_INTERVAL_MS {
+                LAST_STATS_WRITE.store(now, Ordering::SeqCst);
+                write_stats(&stats);
+            }
+        }
+    }
+    values
 }
 
 /// 按物理内存总量给出基线阈值，机器换内存后自动变化。
@@ -472,17 +533,30 @@ fn record(reason: &str, released: u64, low: bool) {
         if stats.today_at / 86_400_000 != now / 86_400_000 {
             stats.today_at = now;
             stats.today_released_bytes = 0;
+            stats.today_peak_percent = 0;
+            stats.today_min_avail_bytes = 0;
+            stats.today_adjust_count = 0;
         }
         stats.today_released_bytes = stats.today_released_bytes.saturating_add(released);
+        stats.today_adjust_count = stats.today_adjust_count.saturating_add(1);
         Some(stats.clone())
     } else {
         None
     };
-    if let (Some(stats), Ok(file)) = (stats, STATS_FILE.lock()) {
-        if let Some(path) = file.as_ref() {
-            if let Ok(data) = serde_json::to_vec_pretty(&stats) {
-                let _ = fs::write(path, data);
-            }
+    if let Some(stats) = stats {
+        LAST_STATS_WRITE.store(now, Ordering::SeqCst);
+        write_stats(&stats);
+    }
+}
+
+/// 统计落盘；数据只写到应用数据目录，不联网。
+fn write_stats(stats: &PersistedStats) {
+    let Ok(file) = STATS_FILE.lock() else {
+        return;
+    };
+    if let Some(path) = file.as_ref() {
+        if let Ok(data) = serde_json::to_vec_pretty(stats) {
+            let _ = fs::write(path, data);
         }
     }
 }
@@ -687,14 +761,88 @@ fn trim_by_scope(settings: &Settings) -> u64 {
     let battery = settings.memory_power_aware && power_state().0 == "battery";
     let paused = settings.memory_pause_fullscreen && fullscreen_active();
     if settings.memory_trim_scope == "system" && !battery && !paused {
-        freed = freed.saturating_add(trim_system());
+        freed = freed.saturating_add(trim_system(&settings.memory_skip_apps));
     }
     freed
 }
 
-/// 释放其他应用的空闲工作集：跳过系统保护进程、当前进程与前台进程。
+/// 手动释放单个应用的工作集（用户在「内存占用最高的应用」里点释放）。
+/// 只收缩常驻内存，不结束进程；跳过当前进程与 pid ≤ 4 的系统空闲进程。
+pub fn trim_app(settings: &Settings, label: &str, pids: &[u32]) -> MemoryStatus {
+    let freed = trim_pids(pids);
+    record(&format!("释放 {label}"), freed, LOW_ACTIVE.load(Ordering::SeqCst));
+    status(settings)
+}
+
 #[cfg(windows)]
-fn trim_system() -> u64 {
+fn trim_pids(pids: &[u32]) -> u64 {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::{EmptyWorkingSet, GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA,
+    };
+
+    let current = unsafe { GetCurrentProcessId() };
+    let mut freed = 0u64;
+    for pid in pids {
+        if *pid <= 4 || *pid == current {
+            continue;
+        }
+        let Ok(handle) = (unsafe {
+            OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+                false,
+                *pid,
+            )
+        }) else {
+            continue;
+        };
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        if unsafe {
+            GetProcessMemoryInfo(
+                handle,
+                &mut counters,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            )
+        }
+        .is_ok()
+        {
+            let before = counters.WorkingSetSize as u64;
+            if unsafe { EmptyWorkingSet(handle) }.is_ok() {
+                let mut after = PROCESS_MEMORY_COUNTERS {
+                    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                    ..Default::default()
+                };
+                if unsafe {
+                    GetProcessMemoryInfo(
+                        handle,
+                        &mut after,
+                        std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                    )
+                }
+                .is_ok()
+                {
+                    freed = freed.saturating_add(before.saturating_sub(after.WorkingSetSize as u64));
+                }
+            }
+        }
+        let _ = unsafe { CloseHandle(handle) };
+    }
+    freed
+}
+
+#[cfg(not(windows))]
+fn trim_pids(_pids: &[u32]) -> u64 {
+    0
+}
+
+/// 释放其他应用的空闲工作集：跳过系统保护进程、当前进程与前台进程，
+/// 以及用户在「释放保护名单」里标记的应用。
+#[cfg(windows)]
+fn trim_system(skip: &[String]) -> u64 {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -766,6 +914,7 @@ fn trim_system() -> u64 {
             && pid != current
             && pid != foreground
             && !name.is_empty()
+            && !skip.iter().any(|item| item == &name)
             && !crate::processes::is_protected(&name, None)
         {
             if let Ok(handle) = unsafe {
@@ -794,7 +943,7 @@ fn trim_system() -> u64 {
 }
 
 #[cfg(not(windows))]
-fn trim_system() -> u64 {
+fn trim_system(_skip: &[String]) -> u64 {
     0
 }
 

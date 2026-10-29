@@ -171,6 +171,7 @@ export const DEFAULT_SETTINGS: Settings = {
   memoryDropIcons: true,
   memoryPauseFullscreen: true,
   memoryPowerAware: true,
+  memorySkipApps: [],
   hotkeyToggle: "Ctrl+Alt+Q",
   appHotkeys: {},
   closeToTray: true,

@@ -670,6 +670,12 @@ const mockBridge = {
     return mockMemoryTrim();
   },
 
+  async memoryTrimApp(name: string, pids: number[]): Promise<MemoryStatus> {
+    const { mockMemoryTrimApp } = await mockModule();
+    await sleep(200);
+    return mockMemoryTrimApp(name, pids);
+  },
+
   async memoryPurgeSystem(): Promise<number> {
     await sleep(480);
     return Math.round(1.4 * 1024 ** 3);
@@ -975,6 +981,10 @@ const tauriBridge = {
 
   memoryTrim(): Promise<MemoryStatus> {
     return tauriInvoke<MemoryStatus>("memory_trim");
+  },
+
+  memoryTrimApp(name: string, pids: number[]): Promise<MemoryStatus> {
+    return tauriInvoke<MemoryStatus>("memory_trim_app", { name, pids });
   },
 
   memoryPurgeSystem(): Promise<number> {

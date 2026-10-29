@@ -171,6 +171,8 @@ export interface Settings {
   memoryDropIcons: boolean;
   memoryPauseFullscreen: boolean;
   memoryPowerAware: boolean;
+  /** 「全部应用」释放时跳过的应用（进程名小写，不含 .exe）。 */
+  memorySkipApps: string[];
   hotkeyToggle: string;
   appHotkeys: Record<string, string>;
   closeToTray: boolean;
@@ -290,6 +292,10 @@ export interface MemoryStatus {
   history: MemoryLastAction[];
   totalReleasedBytes: number;
   todayReleasedBytes: number;
+  /** 今日内存使用率峰值、最低可用内存与调节次数。 */
+  todayPeakPercent: number;
+  todayMinAvailBytes: number;
+  todayAdjustCount: number;
   adjustCount: number;
 }
 

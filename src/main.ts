@@ -7408,25 +7408,69 @@ function memoryTopCard(): string {
       <div class="mem-history-head">内存占用最高的应用<span>${state.memoryTopLoading ? "读取中…" : "暂无数据"}</span></div>
     </div>`;
   }
+  const skip = state.settings.memorySkipApps ?? [];
   const rows = state.memoryTop
     .slice(0, 4)
-    .map(
-      (group) => `<div class="mem-app-row">
+    .map((group) => {
+      const guarded = processKeys(group).some((key) => skip.includes(key));
+      const key = escapeHtml(group.key);
+      const note = [
+        `${group.items.length} 个进程`,
+        group.protectedGroup ? "系统保护" : "",
+        guarded ? "已保护 · 批量释放跳过" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `<div class="mem-app-row">
         <span class="mem-app-icon">${escapeHtml(group.name.slice(0, 1).toUpperCase())}</span>
-        <div class="mem-app-copy"><strong>${escapeHtml(group.title)}</strong><small>${group.items.length} 个进程${
-          group.protectedGroup ? " · 系统保护" : ""
-        }</small></div>
+        <div class="mem-app-copy"><strong>${escapeHtml(group.title)}</strong><small>${note}</small></div>
         <span class="mem-app-size">${formatBytes(group.memoryBytes)}</span>
-      </div>`,
-    )
+        <div class="mem-app-actions">
+          <button class="mem-app-btn" data-settings-action="memory-app-trim" data-value="${key}" data-focus-key="memory-app-trim-${key}" title="只收缩工作集，不结束应用"${
+            group.protectedGroup || state.memoryTrimBusy ? " disabled" : ""
+          }>释放</button>
+          <button class="mem-app-btn is-icon${guarded ? " is-on" : ""}" data-settings-action="memory-skip" data-value="${key}" data-focus-key="memory-skip-${key}" aria-pressed="${guarded}" aria-label="${
+            guarded ? "从释放保护名单移除" : "加入释放保护名单"
+          }" title="${
+            guarded ? "从释放保护名单移除" : "加入释放保护名单：批量释放时跳过"
+          }">${icon("shield")}</button>
+        </div>
+      </div>`;
+    })
     .join("");
   return `<div class="settings-card mem-history">
-    <div class="mem-history-head">内存占用最高的应用<span>仅展示，不自动结束</span></div>
+    <div class="mem-history-head">内存占用最高的应用<span>可单独释放工作集</span></div>
     ${rows}
     <div class="mem-top-foot">${backgroundAction(
       "ghost-btn",
       "去后台管理",
-    )}<span>结束应用会丢失未保存内容</span></div>
+    )}<span>释放不结束应用；盾牌 = 批量释放时跳过</span></div>
+  </div>`;
+}
+
+function memorySkipCard(): string {
+  const skip = state.settings.memorySkipApps ?? [];
+  if (!skip.length) {
+    return `<div class="settings-card mem-history">
+      <div class="mem-history-head">释放保护名单<span>暂无</span></div>
+      <div class="mem-event"><div class="mem-event-copy"><strong>批量释放目前不会跳过任何应用</strong><small>在下方「内存占用最高的应用」里点盾牌，把游戏、编辑器、虚拟机等加入名单；「全部应用」与空闲释放都会跳过它们。</small></div></div>
+    </div>`;
+  }
+  const chips = skip
+    .map(
+      (key) =>
+        `<button class="chip is-active" data-settings-action="memory-skip-remove" data-value="${escapeHtml(
+          key,
+        )}" data-focus-key="memory-skip-list-${escapeHtml(key)}" title="点击移出保护名单">${escapeHtml(
+          key,
+        )} ×</button>`,
+    )
+    .join("");
+  return `<div class="settings-card">
+    <div class="setting-row">
+      <div class="setting-copy"><div class="setting-title">释放保护名单</div><div class="setting-desc">「全部应用」与空闲释放会跳过这些应用，避免让正在使用的工具重新载入；点一下即可移除。仅启点范围不受影响。</div></div>
+      <div class="setting-control"><div class="chips">${chips}</div></div>
+    </div>
   </div>`;
 }
 
@@ -7472,9 +7516,13 @@ function memoryPanel(): string {
     ${memoryTrendCard()}
     ${
       state.memoryStatus
-        ? `<div class="mem-summary"><span class="mem-summary-dot"></span>累计调节 ${state.memoryStatus.adjustCount} 次 · 累计释放 ${formatBytes(
+        ? `<div class="mem-summary"><span class="mem-summary-dot"></span>累计释放 ${formatBytes(
             state.memoryStatus.totalReleasedBytes,
-          )} · 今日 ${formatBytes(state.memoryStatus.todayReleasedBytes)}</div>`
+          )} · 今日释放 ${formatBytes(state.memoryStatus.todayReleasedBytes)}（调节 ${
+            state.memoryStatus.todayAdjustCount
+          } 次）· 今日峰值 ${state.memoryStatus.todayPeakPercent}% · 最低可用 ${formatBytes(
+            state.memoryStatus.todayMinAvailBytes,
+          )}</div>`
         : ""
     }
     ${emergencyAlert}
@@ -7537,6 +7585,7 @@ function memoryPanel(): string {
         }" data-settings-action="memory-power-toggle" data-focus-key="memory-power-toggle"></button></div>
       </div>
     </div>
+    ${memorySkipCard()}
     ${memoryHistoryCard()}
     ${memoryTopCard()}
     <div class="boot-actions">
@@ -7547,7 +7596,7 @@ function memoryPanel(): string {
         state.memoryTrimBusy ? " disabled" : ""
       }>${state.memoryTrimBusy ? "正在释放…" : "释放一次内存"}</button>
     </div>
-    <div class="background-note">${icon("info")}<span>“释放一次内存”只收缩进程工作集，不会关闭应用。系统级深度清理（待机列表、已修改页面）已移动到「系统优化」插件。自动模式由 Windows 低内存/恢复通知触发，低内存通知会直接降档，恢复通知会直接尝试回升，不依赖使用率是否刚好越过阈值；定时检查的档位切换至少间隔 15 秒，系统通知不受冷却影响。提交内存接近上限时也会直接降档。释放范围默认仅启点，选择全部应用后会影响其它程序的下次载入速度。窗口隐藏时还会挂起 WebView2，显示前自动恢复。</span></div>
+    <div class="background-note">${icon("info")}<span>“释放一次内存”只收缩进程工作集，不会关闭应用；上方列表里的“释放”只作用于该应用，盾牌把它加入保护名单后批量释放会跳过。系统级深度清理（待机列表、已修改页面）已移动到「系统优化」插件。自动模式由 Windows 低内存/恢复通知触发，低内存通知会直接降档，恢复通知会直接尝试回升，不依赖使用率是否刚好越过阈值；定时检查的档位切换至少间隔 15 秒，系统通知不受冷却影响。提交内存接近上限时也会直接降档。释放范围默认仅启点，选择全部应用后会影响其它程序的下次载入速度。窗口隐藏时还会挂起 WebView2，显示前自动恢复。今日峰值与最低可用每分钟落盘一次，只保存在本机。</span></div>
   </div>`;
 }
 
@@ -7672,6 +7721,64 @@ async function trimMemoryNow(): Promise<void> {
     state.memoryTrimBusy = false;
     refreshActive();
   }
+}
+
+async function trimMemoryApp(group: ProcessGroup): Promise<void> {
+  if (state.memoryTrimBusy) return;
+  state.memoryTrimBusy = true;
+  refreshActive();
+  try {
+    const status = await api.memoryTrimApp(
+      group.title,
+      group.items.map((item) => item.pid),
+    );
+    setMemoryStatus(status);
+    state.memoryError = null;
+    const freed = status.lastAction?.releasedBytes ?? 0;
+    showToast(
+      freed > 0
+        ? `${group.title} 已释放 ${formatBytes(freed)} 工作集，应用不会退出`
+        : `${group.title} 的工作集已在低位，本次没有可释放的部分`,
+      freed > 0 ? "success" : "info",
+    );
+    void loadMemoryTop();
+  } catch (error) {
+    showToast(`释放 ${group.title} 失败：${String(error)}`, "error");
+  } finally {
+    state.memoryTrimBusy = false;
+    refreshActive();
+  }
+}
+
+function processKeys(group: ProcessGroup): string[] {
+  const keys = new Set<string>();
+  for (const item of group.items) {
+    const key = item.name.trim().toLowerCase().replace(/\.exe$/, "") || item.name;
+    keys.add(key);
+  }
+  return [...keys];
+}
+
+function toggleSkipApp(group: ProcessGroup): void {
+  const current = state.settings.memorySkipApps ?? [];
+  const keys = processKeys(group);
+  const guarded = keys.some((key) => current.includes(key));
+  const next = guarded
+    ? current.filter((item) => !keys.includes(item))
+    : [...current, ...keys.filter((key) => !current.includes(key))];
+  patchMemory({ memorySkipApps: next });
+  showToast(
+    guarded
+      ? `已把 ${group.title} 移出释放保护名单`
+      : `已保护 ${group.title}：「全部应用」与空闲释放会跳过它`,
+    "info",
+  );
+}
+
+function removeSkipKey(key: string): void {
+  if (!key) return;
+  const next = (state.settings.memorySkipApps ?? []).filter((item) => item !== key);
+  patchMemory({ memorySkipApps: next });
 }
 
 async function purgeMemorySystem(): Promise<void> {
@@ -8715,6 +8822,21 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       return;
     case "memory-trim":
       void trimMemoryNow();
+      return;
+    case "memory-app-trim": {
+      const key = actionEl.dataset.value;
+      const group = state.memoryTop?.find((item) => item.key === key);
+      if (group) void trimMemoryApp(group);
+      return;
+    }
+    case "memory-skip": {
+      const key = actionEl.dataset.value ?? "";
+      const group = state.memoryTop?.find((item) => item.key === key);
+      if (group) toggleSkipApp(group);
+      return;
+    }
+    case "memory-skip-remove":
+      removeSkipKey(actionEl.dataset.value ?? "");
       return;
     case "memory-purge":
       void purgeMemorySystem();
