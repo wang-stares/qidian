@@ -33,6 +33,7 @@ import type {
   StartupScan,
   TerminateReport,
   UninstallReport,
+  WarmIconsResult,
 } from "./types";
 import { cloneSettings, DEFAULT_SETTINGS } from "./defaults";
 
@@ -263,8 +264,8 @@ const mockBridge = {
     return {};
   },
 
-  async warmIcons(): Promise<number> {
-    return 0;
+  async warmIcons(): Promise<WarmIconsResult> {
+    return { processed: 0, pending: 0 };
   },
 
   async launch(id: string): Promise<LaunchResult> {
@@ -752,8 +753,8 @@ const tauriBridge = {
     return tauriInvoke<IconMap>("load_icons", { ids });
   },
 
-  warmIcons(): Promise<number> {
-    return tauriInvoke<number>("warm_icons");
+  warmIcons(): Promise<WarmIconsResult> {
+    return tauriInvoke<WarmIconsResult>("warm_icons");
   },
 
   async launch(id: string): Promise<LaunchResult> {
@@ -1053,6 +1054,16 @@ export async function showWindow(): Promise<void> {
     await win.show();
     await win.setFocus();
   });
+}
+
+/** 窗口是否真正在前台可见：隐藏到托盘或最小化时返回 false，供后台预热与校验让路。 */
+export async function windowActive(): Promise<boolean> {
+  if (!TAURI) return true;
+  try {
+    return await withWindow(async (win) => !(await win.isMinimized()) && (await win.isVisible()));
+  } catch {
+    return true;
+  }
 }
 
 export async function hideWindow(): Promise<void> {

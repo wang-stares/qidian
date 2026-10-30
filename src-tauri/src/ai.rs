@@ -718,11 +718,11 @@ pub fn start(paths: &Paths, state: &AiState) -> Result<(), String> {
     let spec = selected_spec();
     let exe = llama_server_exe(paths).ok_or_else(|| "缺少 llama-server.exe".to_string())?;
     let model = model_path(paths, spec);
-    // 线程数按本机核心数收敛，既吃满 CPU 又避免在低配机器上抢占过度。
+    // 留一个核心给界面与系统，最多 6 线程：推理吃满全部核心时切页与动画会明显发顿。
     let threads = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(4)
-        .clamp(2, 8);
+        .map(|value| value.get().saturating_sub(1))
+        .unwrap_or(3)
+        .clamp(2, 6);
     {
         let mut guard = state.server.lock().map_err(|_| "AI 状态不可用".to_string())?;
         *guard = None;

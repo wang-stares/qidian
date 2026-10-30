@@ -321,6 +321,12 @@ export interface IconMap {
   [id: string]: string;
 }
 
+/** 图标预热按批返回：processed 为本批处理数，pending 为仍待处理数。 */
+export interface WarmIconsResult {
+  processed: number;
+  pending: number;
+}
+
 export type StartupSource =
   | "registry"
   | "runOnce"

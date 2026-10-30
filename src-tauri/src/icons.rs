@@ -8,8 +8,20 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// 首次提取要经过 Shell 图像工厂与 PNG 编码，串行处理一批会明显等待。
-/// 按最多 6 个线程并行提取，磁盘已缓存的图标仍走同步快路径。
-const MAX_EXTRACT_THREADS: usize = 6;
+/// 按最多 4 个线程并行提取，磁盘已缓存的图标仍走同步快路径。
+const MAX_EXTRACT_THREADS: usize = 4;
+
+/// 单次预热最多处理 100 个图标：启动后分几批做，避免一口气拉起全部
+/// Shell 提取线程和磁盘读写，把首帧之后的交互抢掉。
+const WARM_BATCH: usize = 100;
+
+/// 预热结果：本次处理数量与仍待预热的数量，前端据此决定是否继续下一批。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WarmOutcome {
+    pub processed: usize,
+    pub pending: usize,
+}
 
 /// 同一图标可能同时被可视区请求与后台预热命中，进程内先去重，避免重复提取。
 fn icon_claims() -> &'static Mutex<HashSet<String>> {
@@ -31,7 +43,8 @@ fn release_icon(id: &str) {
 }
 
 /// 后台预热磁盘图标缓存，不返回 data URL，供启动后空闲时调用。
-pub fn warm_icons(paths: &Paths, targets: Vec<(String, LaunchTarget)>) -> usize {
+/// 每次只处理一批，剩下的交给下一次调用，前端按窗口可见性决定何时继续。
+pub fn warm_icons(paths: &Paths, targets: Vec<(String, LaunchTarget)>) -> WarmOutcome {
     let mut pending = Vec::new();
     for (id, target) in targets {
         if !valid_id(&id) {
@@ -45,20 +58,22 @@ pub fn warm_icons(paths: &Paths, targets: Vec<(String, LaunchTarget)>) -> usize 
         }
         pending.push((id, target));
     }
-    if pending.is_empty() {
-        return 0;
+    let total = pending.len();
+    if total == 0 {
+        return WarmOutcome {
+            processed: 0,
+            pending: 0,
+        };
     }
+    let batch: Vec<(String, LaunchTarget)> = pending.into_iter().take(WARM_BATCH).collect();
+    let processed = batch.len();
     #[cfg(windows)]
-    {
-        extract_parallel(&paths.icons, pending)
-            .into_iter()
-            .filter(|(_, url)| url.is_some())
-            .count()
-    }
+    let _ = extract_parallel(&paths.icons, batch);
     #[cfg(not(windows))]
-    {
-        let _ = pending;
-        0
+    let _ = batch;
+    WarmOutcome {
+        processed,
+        pending: total - processed,
     }
 }
 

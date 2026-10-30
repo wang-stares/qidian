@@ -373,8 +373,9 @@ async fn load_icons(
 }
 
 /// 启动后空闲时预热全部图标到磁盘缓存，滚动时直接读盘，不再现场提取。
+/// 一次只处理一批，前端按窗口可见性决定是否继续，避免在后台常驻时白跑。
 #[tauri::command]
-async fn warm_icons(state: State<'_, AppState>) -> Result<usize, String> {
+async fn warm_icons(state: State<'_, AppState>) -> Result<icons::WarmOutcome, String> {
     let paths = state.paths.clone();
     let targets: Vec<(String, LaunchTarget)> = {
         let apps = state
@@ -1189,12 +1190,19 @@ fn spawn_memory_watcher(app: tauri::AppHandle) {
             if !MEMORY_ACTIVE.load(Ordering::SeqCst) {
                 break;
             }
-            let result = unsafe { WaitForMultipleObjects(&handles, false, 30_000) };
+            // 空闲自动释放关闭时不需要 30 秒轮询，放宽到 5 分钟；
+            // 真正的内存压力仍由低 / 高内存通知立即唤醒，不依赖这个超时。
+            let idle_trim = settings_snapshot(&app).memory_idle_trim;
+            let wait_ms = if idle_trim { 30_000 } else { 300_000 };
+            let result = unsafe { WaitForMultipleObjects(&handles, false, wait_ms) };
             let index = result.0;
             if index > 1 {
                 // 超时也做一次空闲检查，不依赖内存通知；无操作时才会实际执行。
                 let settings = settings_snapshot(&app);
-                if MEMORY_ACTIVE.load(Ordering::SeqCst) && settings.memory_mode == "auto" {
+                if idle_trim
+                    && MEMORY_ACTIVE.load(Ordering::SeqCst)
+                    && settings.memory_mode == "auto"
+                {
                     memory::maybe_idle_trim(&app, &settings);
                 }
                 continue;

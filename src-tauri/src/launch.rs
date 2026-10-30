@@ -98,6 +98,11 @@ fn launch_windows(target: &LaunchTarget) -> Result<(), String> {
         }
         LaunchTarget::Uwp { aumid } => {
             let uri = format!("shell:AppsFolder\\{aumid}");
+            // 先让 Shell 直接激活目标，不额外拉起一个 explorer.exe；
+            // 少数环境不支持 shell 路径时再退回 explorer.exe。
+            if shell_open(&uri, "", "").is_ok() {
+                return Ok(());
+            }
             Command::new("explorer.exe")
                 .arg(uri)
                 .creation_flags(0x0800_0000)

@@ -14,6 +14,7 @@ import {
   watchAppFocus,
   watchAppLaunch,
   setMemorySaver,
+  windowActive,
 } from "./api";
 import { escapeHtml, icon } from "./icons";
 import rewardQr from "./assets/reward-qrcode.png";
@@ -673,6 +674,10 @@ let iconObserver: IntersectionObserver | null = null;
 let iconFlushTimer = 0;
 let iconInFlight = 0;
 let warmIconsTimer = 0;
+/** 启动到托盘时挂起的启动后工作：首次回到前台再补做，避免后台白跑扫描与图标提取。 */
+let deferredStartup = false;
+let deferredWallpaper = false;
+let warmPending = false;
 let renderRaf = 0;
 let renderScopeAll = true;
 let previousFocus: HTMLElement | null = null;
@@ -739,7 +744,14 @@ async function boot(): Promise<void> {
     state.loading = false;
     applyAppearance();
     renderAll();
-    void syncWallpaperData();
+    // 启动到托盘（--autostart）时不加载壁纸、不预热图标、不校验应用路径；
+    // 这些工作都推迟到窗口第一次真正显示时，避免在后台白跑一遍扫描。
+    if (launchHidden) {
+      deferredStartup = true;
+      deferredWallpaper = true;
+    } else {
+      void syncWallpaperData();
+    }
     void loadModules();
     if (state.aiEnabled || state.aiInstalled) void refreshAiStatus();
     void watchAiProgress((progress) => {
@@ -747,14 +759,20 @@ async function boot(): Promise<void> {
       if (progress.phase === "done") state.aiProgress = null;
       if (state.workspace === "ai") refreshActive();
     });
-    window.setTimeout(() => void pruneMissingApps(true), 1500);
-    scheduleWarmIcons(6000);
+    if (!launchHidden) {
+      window.setTimeout(() => void pruneMissingApps(true), 1500);
+      scheduleWarmIcons(6000);
+    }
     const refreshHours = state.settings.autoRefreshHours;
     const stale =
       state.scannedAt === null ||
       (refreshHours > 0 && Date.now() - state.scannedAt > refreshHours * 3_600_000);
-    if (state.apps.length === 0) {
-      void runScan(false, true);
+    if (state.apps.length === 0 || stale) {
+      if (launchHidden) {
+        deferredStartup = true;
+      } else {
+        void runScan(false, true);
+      }
     }
     if (!launchHidden) await showWindow();
     void api
@@ -771,6 +789,11 @@ async function boot(): Promise<void> {
         }
       });
       watchAppFocus(() => {
+        if (deferredStartup) void flushDeferredStartup();
+        if (warmPending) {
+          warmPending = false;
+          scheduleWarmIcons(1200);
+        }
         void pruneMissingApps();
         if (state.workspace === "memory" && !state.settingsOpen) void loadMemoryStatus();
       });
@@ -787,9 +810,6 @@ async function boot(): Promise<void> {
       window.setTimeout(() => {
         els.search.focus({ preventScroll: true });
       }, 120);
-    }
-    if (state.apps.length > 0 && stale) {
-      void runScan(false, true);
     }
   } catch (error) {
     state.loading = false;
@@ -1583,14 +1603,50 @@ function enqueueIcons(ids: string[]): void {
   iconFlushTimer = window.setTimeout(() => void flushIconQueue(), 10);
 }
 
-/// 启动或扫描完成后延迟预热全部图标，滚动到任何位置时都能直接读盘显示。
+/// 启动或扫描完成后延迟预热图标；窗口隐藏 / 最小化时先挂起，回到前台再继续。
 function scheduleWarmIcons(delay = 3000): void {
   if (!isTauri) return;
   window.clearTimeout(warmIconsTimer);
-  warmIconsTimer = window.setTimeout(() => {
-    if (state.loading || state.memorySqueezed) return;
-    void api.warmIcons().catch(() => undefined);
-  }, delay);
+  warmIconsTimer = window.setTimeout(() => void warmIconsStep(), delay);
+}
+
+async function warmIconsStep(): Promise<void> {
+  if (state.loading || state.memorySqueezed) return;
+  if (!(await windowActive())) {
+    warmPending = true;
+    return;
+  }
+  try {
+    const result = await api.warmIcons();
+    if (result.processed > 0 && result.pending > 0) {
+      // 分批预热：可见时继续下一批，隐藏或最小化时留到下次回到前台。
+      if (!(await windowActive())) {
+        warmPending = true;
+        return;
+      }
+      window.clearTimeout(warmIconsTimer);
+      warmIconsTimer = window.setTimeout(() => void warmIconsStep(), 900);
+    }
+  } catch {
+    // 预热失败不影响列表展示，滚动时仍会按需提取。
+  }
+}
+
+/** 启动到托盘时挂起的工作：首次回到前台补做壁纸、扫描与图标预热。 */
+function flushDeferredStartup(): void {
+  if (!deferredStartup) return;
+  deferredStartup = false;
+  if (deferredWallpaper) {
+    deferredWallpaper = false;
+    void syncWallpaperData();
+  }
+  const refreshHours = state.settings.autoRefreshHours;
+  const stale =
+    state.scannedAt === null ||
+    (refreshHours > 0 && Date.now() - state.scannedAt > refreshHours * 3_600_000);
+  if (stale) void runScan(false, true);
+  window.setTimeout(() => void pruneMissingApps(true), 1200);
+  scheduleWarmIcons(1500);
 }
 
 async function flushIconQueue(): Promise<void> {
@@ -9789,6 +9845,7 @@ let lastAppPruneAt = 0;
 
 async function pruneMissingApps(force = false): Promise<void> {
   const now = Date.now();
+  if (!force && !(await windowActive())) return;
   if (!force && now - lastAppPruneAt < 15_000) return;
   lastAppPruneAt = now;
   try {
