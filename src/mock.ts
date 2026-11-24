@@ -675,14 +675,6 @@ interface ModuleSeed {
 
 const MODULE_SEEDS: ModuleSeed[] = [
   {
-    id: "ai",
-    name: "本地 AI 助手",
-    version: "1.5.6",
-    description: "完全在本机运行的 AI 助手：按电脑性能选择 Qwen2.5-0.5B / 1.5B / 3B，可搜索并启动应用、结束后台应用、读取系统状态、释放内存、打开网页、切换主题，还支持 Whisper 语音输入与朗读。未下载模型时不占用磁盘与内存。",
-    features: ["本地模型问答", "0.5B / 1.5B / 3B 可选", "按需下载", "输入时预热", "启动应用", "结束应用", "系统状态", "释放内存", "打开网页", "切换主题", "语音输入", "语音朗读"],
-    sizeBytes: 1240,
-  },
-  {
     id: "background",
     name: "后台管理",
     version: "1.1.0",

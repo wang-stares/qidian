@@ -1,8 +1,4 @@
 import type {
-  AiChatMessage,
-  AiModelInfo,
-  AiProgress,
-  AiStatus,
   AppEntry,
   Bootstrap,
   CleanupApp,
@@ -41,37 +37,6 @@ const TAURI = "__TAURI_INTERNALS__" in window;
 const MOCK_KEY = "qidian.settings.v1";
 let mockModulePromise: Promise<typeof import("./mock")> | null = null;
 let mockAutostart = localStorage.getItem("qidian.mock.autostart") === "1";
-let mockInstalledModel: string | null = null;
-let mockAiRunning = false;
-let mockAiModel = "qwen1.5b";
-
-const MOCK_WHISPER_BYTES = 147_951_465;
-const AI_TOTAL_BYTES = 1_265_272_291;
-
-/** 与 Rust 侧 MODELS 保持一致的演示数据，仅用于浏览器预览。 */
-const MOCK_MODELS: Array<Omit<AiModelInfo, "installed" | "selected">> = [
-  {
-    id: "qwen0.5b",
-    label: "Qwen2.5-0.5B",
-    bytes: 491_400_032,
-    memory: "内存约 1.2 GB",
-    note: "低配电脑首选：下载最小、响应最快，复杂指令偶尔理解不到位",
-  },
-  {
-    id: "qwen1.5b",
-    label: "Qwen2.5-1.5B",
-    bytes: 1_117_320_736,
-    memory: "内存约 2.2 GB",
-    note: "默认推荐：问答、工具调用与速度平衡",
-  },
-  {
-    id: "qwen3b",
-    label: "Qwen2.5-3B",
-    bytes: 2_104_932_768,
-    memory: "内存约 3.5 GB",
-    note: "性能较好的电脑：理解与工具调用最稳，启动更慢",
-  },
-];
 
 export const isTauri = TAURI;
 
@@ -107,12 +72,6 @@ function normalizeSettings(raw: unknown): Settings {
       typeof incoming.hotkeyToggle === "string" && incoming.hotkeyToggle.trim()
         ? incoming.hotkeyToggle
         : DEFAULT_SETTINGS.hotkeyToggle,
-    aiPermissions: {
-      ...DEFAULT_SETTINGS.aiPermissions,
-      ...(incoming.aiPermissions && typeof incoming.aiPermissions === "object"
-        ? incoming.aiPermissions
-        : {}),
-    },
     closeToTray:
       typeof incoming.closeToTray === "boolean"
         ? incoming.closeToTray
@@ -224,15 +183,11 @@ async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): 
 const mockBridge = {
   async bootstrap(): Promise<Bootstrap> {
     await sleep(240);
-    const { MOCK_APPS, mockModuleInstalled } = await mockModule();
-    // 预览环境与桌面端一致：AI 是否启用完全由插件安装状态决定。
-    const aiInstalled = mockModuleInstalled("ai");
+    const { MOCK_APPS } = await mockModule();
     return {
       settings: await loadMockSettings(),
       apps: MOCK_APPS,
       scannedAt: Date.now() - 42 * 60 * 1000,
-      aiEnabled: aiInstalled,
-      aiInstalled: aiInstalled && mockInstalledModel !== null,
     };
   },
 
@@ -318,145 +273,6 @@ const mockBridge = {
     await sleep(1200);
     const { mockCleanupUninstall } = await mockModule();
     return mockCleanupUninstall(id, removeLeftovers);
-  },
-
-  async aiStatus(): Promise<AiStatus> {
-    await sleep(80);
-    const { mockModuleInstalled } = await mockModule();
-    const enabled = mockModuleInstalled("ai");
-    const spec = MOCK_MODELS.find((item) => item.id === mockAiModel) ?? MOCK_MODELS[1];
-    return {
-      enabled,
-      installed: enabled && mockInstalledModel === spec.id,
-      running: mockAiRunning,
-      downloadedBytes: mockInstalledModel === spec.id ? AI_TOTAL_BYTES : 0,
-      totalBytes: spec.bytes + MOCK_WHISPER_BYTES,
-      modelLabel: spec.label,
-      downloading: false,
-      model: spec.id,
-      models: MOCK_MODELS.map((item) => ({
-        ...item,
-        installed: item.id === mockInstalledModel,
-        selected: item.id === spec.id,
-      })),
-    };
-  },
-
-  async aiSetEnabled(_enabled: boolean): Promise<void> {
-    void _enabled;
-    await sleep(20);
-  },
-
-  async aiSetModel(model: string): Promise<void> {
-    if (!MOCK_MODELS.some((item) => item.id === model)) throw new Error("未知的模型");
-    mockAiModel = model;
-    mockAiRunning = false;
-    await sleep(40);
-  },
-
-  async aiDownload(): Promise<void> {
-    await sleep(900);
-    mockInstalledModel = mockAiModel;
-  },
-
-  async aiStart(): Promise<void> {
-    await sleep(200);
-    mockAiRunning = true;
-  },
-
-  async aiStop(): Promise<void> {
-    mockAiRunning = false;
-  },
-
-  async aiChat(
-    messages: AiChatMessage[],
-    availableTools: unknown[] = [],
-  ): Promise<Record<string, unknown>> {
-    await sleep(500);
-    const lastUser = [...messages].reverse().find((message) => message.role === "user");
-    const tools = messages.filter((message) => message.role === "tool").length;
-    const text = lastUser?.content ?? "";
-    const toolNames = (availableTools as Array<{ function?: { name?: string } }>)
-      .map((tool) => tool.function?.name ?? "")
-      .filter(Boolean);
-    if (text.includes("关闭") && text.includes("微信")) {
-      if (!toolNames.includes("list_running_apps") || !toolNames.includes("close_app")) {
-        return {
-          role: "assistant",
-          content:
-            "当前没有「应用结束」权限。请到 设置 › 插件 › AI 工具权限，先开启「应用结束」大类，再按需开启「查看运行中的应用」与「结束应用」。",
-        };
-      }
-      if (tools >= 2) {
-        return { role: "assistant", content: "已结束「微信」，共关闭 2 个进程。" };
-      }
-      if (tools === 1) {
-        return {
-          role: "assistant",
-          content: "",
-          tool_calls: [
-            {
-              id: "mock-close",
-              type: "function",
-              function: { name: "close_app", arguments: JSON.stringify({ app: "wechat" }) },
-            },
-          ],
-        };
-      }
-      return {
-        role: "assistant",
-        content: "",
-        tool_calls: [
-          {
-            id: "mock-list",
-            type: "function",
-            function: {
-              name: "list_running_apps",
-              arguments: JSON.stringify({ query: "微信" }),
-            },
-          },
-        ],
-      };
-    }
-    return {
-      role: "assistant",
-      content:
-        "这是浏览器预览模式。桌面版会把问题交给本地 Qwen2.5-1.5B 模型，并且可以调用应用搜索、启动应用、结束应用与打开设置。",
-    };
-  },
-
-  async aiTranscribe(_wav: string, _language?: string): Promise<string> {
-    await sleep(300);
-    return "打开微信";
-  },
-
-  async aiClassify(
-    apps: [string, string][],
-    categories: [string, string][],
-  ): Promise<{ assignments: { id: string; category: string }[]; skipped: number }> {
-    await sleep(360);
-    // 浏览器预览没有本地模型，用关键词粗略模拟一次分类结果。
-    const ids = new Set(categories.map(([id]) => id));
-    const rules: [RegExp, string][] = [
-      [/steam|game|游戏|epic/i, "game"],
-      [/code|studio|idea|vim|git|ide|dev/i, "dev"],
-      [/office|word|excel|ppt|wps|pdf/i, "office"],
-      [/chrome|edge|firefox|browser|浏览器/i, "network"],
-      [/qq|wechat|微信|feishu|飞书|mail|邮箱/i, "social"],
-    ];
-    const assignments = apps
-      .map(([id, name]) => {
-        const hit = rules.find(([pattern]) => pattern.test(name));
-        const category = hit && ids.has(hit[1]) ? hit[1] : ids.has("other") ? "other" : "";
-        return { id, category };
-      })
-      .filter((entry) => entry.category);
-    return { assignments, skipped: apps.length - assignments.length };
-  },
-
-  async aiRemove(): Promise<void> {
-    mockInstalledModel = null;
-    mockAiRunning = false;
   },
 
   async saveSettings(settings: Settings): Promise<void> {
@@ -682,12 +498,6 @@ const mockBridge = {
     return Math.round(1.4 * 1024 ** 3);
   },
 
-  async openExternal(url: string): Promise<void> {
-    await sleep(60);
-    // 预览环境不真的拉起浏览器，只记录最后一次调用，方便排查。
-    localStorage.setItem("qidian.mock.lastUrl", url);
-  },
-
   async autostartStatus(): Promise<boolean> {
     return mockAutostart;
   },
@@ -838,52 +648,6 @@ const tauriBridge = {
     return tauriInvoke<TerminateReport>("terminate_processes", { targets });
   },
 
-  aiStatus(): Promise<AiStatus> {
-    return tauriInvoke<AiStatus>("ai_status");
-  },
-
-  aiSetEnabled(enabled: boolean): Promise<void> {
-    return tauriInvoke<void>("ai_set_enabled", { enabled });
-  },
-
-  aiSetModel(model: string): Promise<void> {
-    return tauriInvoke<void>("ai_set_model", { model });
-  },
-
-  aiDownload(): Promise<void> {
-    return tauriInvoke<void>("ai_download");
-  },
-
-  aiStart(): Promise<void> {
-    return tauriInvoke<void>("ai_start");
-  },
-
-  aiStop(): Promise<void> {
-    return tauriInvoke<void>("ai_stop");
-  },
-
-  aiChat(
-    messages: AiChatMessage[],
-    tools: unknown[],
-  ): Promise<Record<string, unknown>> {
-    return tauriInvoke<Record<string, unknown>>("ai_chat", { messages, tools });
-  },
-
-  aiTranscribe(wav: string, language: string): Promise<string> {
-    return tauriInvoke<string>("ai_transcribe", { wav, language });
-  },
-
-  aiClassify(
-    apps: [string, string][],
-    categories: [string, string][],
-  ): Promise<{ assignments: { id: string; category: string }[]; skipped: number }> {
-    return tauriInvoke("ai_classify_apps", { apps, categories });
-  },
-
-  aiRemove(): Promise<void> {
-    return tauriInvoke<void>("ai_remove");
-  },
-
   modules(): Promise<ModuleStatus[]> {
     return tauriInvoke<ModuleStatus[]>("list_modules");
   },
@@ -990,10 +754,6 @@ const tauriBridge = {
 
   memoryPurgeSystem(): Promise<number> {
     return tauriInvoke<number>("memory_purge_system");
-  },
-
-  openExternal(url: string): Promise<void> {
-    return tauriInvoke<void>("open_external", { url });
   },
 
   setAutostart(enabled: boolean): Promise<boolean> {
@@ -1160,18 +920,6 @@ async function watchMemoryEvent(name: string, callback: () => void): Promise<() 
   try {
     const { listen } = await import("@tauri-apps/api/event");
     return await listen(name, () => callback());
-  } catch {
-    return () => undefined;
-  }
-}
-
-export async function watchAiProgress(
-  callback: (progress: AiProgress) => void,
-): Promise<() => void> {
-  if (!TAURI) return () => undefined;
-  try {
-    const { listen } = await import("@tauri-apps/api/event");
-    return await listen<AiProgress>("ai-progress", (event) => callback(event.payload));
   } catch {
     return () => undefined;
   }

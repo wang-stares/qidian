@@ -24,14 +24,6 @@ export type BlurLevel = "off" | "standard" | "strong";
 export type Density = "cozy" | "compact";
 export type SortMode = "name" | "recent" | "frequent";
 export type ViewMode = "grid" | "list";
-export type AiPhase =
-  | "idle"
-  | "llama"
-  | "whisper"
-  | "model"
-  | "speech"
-  | "extract"
-  | "done";
 
 export type AppSource =
   | "startMenu"
@@ -154,9 +146,6 @@ export interface Settings {
   scanUwp: boolean;
   includeSystemApps: boolean;
   scanInstallDirs: boolean;
-  aiPermissions: AiPermissions;
-  /** 语音输入识别语言：auto / zh / en。 */
-  aiSpeechLanguage: "auto" | "zh" | "en";
   autoRefreshHours: number;
   memoryMode: MemoryMode;
   memoryLevel: MemoryLevel;
@@ -191,68 +180,6 @@ export interface Bootstrap {
   settings: Settings;
   apps: AppEntry[];
   scannedAt: number | null;
-  aiEnabled: boolean;
-  aiInstalled: boolean;
-}
-
-export interface AiPermissions {
-  appLaunch: boolean;
-  appSearch: boolean;
-  appStart: boolean;
-  appControl: boolean;
-  processList: boolean;
-  processClose: boolean;
-  settingsNav: boolean;
-  settingsOpen: boolean;
-  /** 读取内存、磁盘等系统状态。 */
-  systemInfo: boolean;
-  /** 释放内存、打开网页、切换主题等会改变系统或界面的操作。 */
-  systemAction: boolean;
-}
-
-export interface AiModelInfo {
-  id: string;
-  label: string;
-  bytes: number;
-  memory: string;
-  note: string;
-  installed: boolean;
-  selected: boolean;
-}
-
-export interface AiStatus {
-  enabled: boolean;
-  installed: boolean;
-  running: boolean;
-  downloadedBytes: number;
-  totalBytes: number;
-  modelLabel: string;
-  downloading: boolean;
-  model: string;
-  models: AiModelInfo[];
-}
-
-export interface AiProgress {
-  phase: string;
-  done: number;
-  total: number;
-  percent: number;
-}
-
-export interface AiToolCall {
-  id: string;
-  type: string;
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-export interface AiChatMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  tool_calls?: AiToolCall[];
-  tool_call_id?: string;
 }
 
 export interface MemoryLastAction {
@@ -454,7 +381,6 @@ export interface CategoryMeta {
 }
 
 export type ModuleId =
-  | "ai"
   | "background"
   | "performance"
   | "optimize"

@@ -86,10 +86,6 @@ pub struct Bootstrap {
     pub settings: Settings,
     pub apps: Vec<AppEntry>,
     pub scanned_at: Option<u64>,
-    /// 安装器是否勾选了本地 AI 助手。
-    pub ai_enabled: bool,
-    /// AI 运行时与模型是否已下载完成。
-    pub ai_installed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,43 +273,6 @@ impl Default for CustomTheme {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct AiPermissions {
-    /// 大类：应用启动（搜索 + 启动）。
-    pub app_launch: bool,
-    pub app_search: bool,
-    pub app_start: bool,
-    /// 大类：应用结束（查看进程 + 结束进程）。
-    pub app_control: bool,
-    pub process_list: bool,
-    pub process_close: bool,
-    /// 大类：设置导航（打开设置页）。
-    pub settings_nav: bool,
-    pub settings_open: bool,
-    /// 大类：系统信息（读取内存、磁盘与 CPU 占用）。
-    pub system_info: bool,
-    /// 大类：系统操作（释放内存、打开网页、切换主题）。
-    pub system_action: bool,
-}
-
-impl Default for AiPermissions {
-    fn default() -> Self {
-        Self {
-            app_launch: true,
-            app_search: true,
-            app_start: true,
-            app_control: false,
-            process_list: false,
-            process_close: false,
-            settings_nav: true,
-            settings_open: true,
-            system_info: true,
-            system_action: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub schema_version: u32,
     pub theme: String,
@@ -342,10 +301,6 @@ pub struct Settings {
     pub include_system_apps: bool,
     /// 补扫 Program Files 等安装目录，找出没有快捷方式 / 注册表记录的绿色软件。
     pub scan_install_dirs: bool,
-    /// AI 工具权限：大类 + 小类；关闭大类时该组全部失效。
-    pub ai_permissions: AiPermissions,
-    /// 语音输入识别语言：auto / zh / en，默认中文，避免短句被误判成英文。
-    pub ai_speech_language: String,
     pub auto_refresh_hours: u32,
     pub memory_mode: String,
     pub memory_level: String,
@@ -406,8 +361,6 @@ impl Default for Settings {
             scan_uwp: true,
             include_system_apps: false,
             scan_install_dirs: false,
-            ai_permissions: AiPermissions::default(),
-            ai_speech_language: "zh".to_string(),
             auto_refresh_hours: 12,
             memory_mode: "auto".to_string(),
             memory_level: "normal".to_string(),
