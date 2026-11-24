@@ -696,6 +696,7 @@ async function boot(): Promise<void> {
     void loadModules();
     if (!launchHidden) {
       window.setTimeout(() => void pruneMissingApps(true), 1500);
+      window.setTimeout(() => void cleanupLegacyAi(), 9000);
       scheduleWarmIcons(6000);
     }
     const refreshHours = state.settings.autoRefreshHours;
@@ -1568,7 +1569,21 @@ function flushDeferredStartup(): void {
     (refreshHours > 0 && Date.now() - state.scannedAt > refreshHours * 3_600_000);
   if (stale) void runScan(false, true);
   window.setTimeout(() => void pruneMissingApps(true), 1200);
+  window.setTimeout(() => void cleanupLegacyAi(), 9000);
   scheduleWarmIcons(1500);
+}
+
+/** 3.0.0 下线 AI 插件后，清掉旧版本下载的模型与运行时，只在实际存在时提示一次。 */
+async function cleanupLegacyAi(): Promise<void> {
+  if (!isTauri) return;
+  try {
+    const freed = await api.cleanupLegacyAi();
+    if (freed > 0) {
+      showToast(`已清理旧版 AI 组件，释放 ${formatBytes(freed)}`, "success");
+    }
+  } catch {
+    // 清理失败不影响使用，下次启动会再试。
+  }
 }
 
 async function flushIconQueue(): Promise<void> {

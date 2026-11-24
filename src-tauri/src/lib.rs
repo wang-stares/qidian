@@ -586,6 +586,24 @@ async fn cleanup_scan(state: State<'_, AppState>) -> Result<CleanupScan, String>
         .map_err(|_| "应用清理扫描失败".to_string())?
 }
 
+/// 3.0.0 下线本地 AI 助手后，清掉旧版本下载的模型、运行时与插件记录，返回释放的字节数。
+#[tauri::command]
+async fn cleanup_legacy_ai(state: State<'_, AppState>) -> Result<u64, String> {
+    let base = state.paths.base.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut freed = 0;
+        for path in [base.join("ai"), base.join("modules").join("ai")] {
+            if path.exists() {
+                freed += store::dir_size(&path);
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+        freed
+    })
+    .await
+    .map_err(|_| "清理旧版 AI 组件失败".to_string())
+}
+
 #[tauri::command]
 async fn cleanup_delete(
     state: State<'_, AppState>,
@@ -1710,6 +1728,7 @@ pub fn run() {
             list_modules,
             install_module,
             uninstall_module,
+            cleanup_legacy_ai,
             cleanup_scan,
             cleanup_delete,
             cleanup_open,

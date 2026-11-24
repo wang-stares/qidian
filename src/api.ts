@@ -223,6 +223,10 @@ const mockBridge = {
     return { processed: 0, pending: 0 };
   },
 
+  async cleanupLegacyAi(): Promise<number> {
+    return 0;
+  },
+
   async launch(id: string): Promise<LaunchResult> {
     const { MOCK_APPS } = await mockModule();
     const app = MOCK_APPS.find((item) => item.id === id);
@@ -565,6 +569,10 @@ const tauriBridge = {
 
   warmIcons(): Promise<WarmIconsResult> {
     return tauriInvoke<WarmIconsResult>("warm_icons");
+  },
+
+  cleanupLegacyAi(): Promise<number> {
+    return tauriInvoke<number>("cleanup_legacy_ai");
   },
 
   async launch(id: string): Promise<LaunchResult> {

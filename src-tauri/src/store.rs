@@ -103,6 +103,24 @@ pub fn delete_wallpaper(paths: &Paths, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 递归统计目录占用字节数，读不到的条目按 0 计，不因个别文件失败中断。
+pub fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                dir_size(&path)
+            } else {
+                entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+            }
+        })
+        .sum()
+}
+
 pub fn load_cache(paths: &Paths) -> Result<Option<ScanCache>, String> {
     if !paths.cache.exists() {
         return Ok(None);
