@@ -483,6 +483,7 @@ export function mockCleanupUninstall(id: string, removeLeftovers: boolean): Unin
     files: 0,
     registryRemoved: removeLeftovers,
     errors: [],
+    locked: [],
   };
   if (!removeLeftovers) return report;
   if (app.installLocation) {
@@ -615,6 +616,7 @@ export function mockCleanupDelete(
     recycled: recycle,
     pendingReboot: [],
     errors: [],
+    locked: [],
   };
   for (const path of paths) {
     const item = mockCleanupCandidates.find((candidate) => candidate.path === path);

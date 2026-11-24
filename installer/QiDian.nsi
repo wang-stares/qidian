@@ -39,10 +39,26 @@ InstallDirRegKey HKCU "Software\QiDian" "InstallDir"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\QiDian.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "立即启动 启点"
 
+; 自动更新传入 /P（passive，仅显示进度）或 /S（完全静默）。
+; 这两种模式下跳过欢迎、目录、组件与完成页，只保留进度页。
+Var SilentMode
+Var RestartAfter
+
+Function SkipIfSilent
+  ${If} $SilentMode != "interactive"
+    Abort
+  ${EndIf}
+FunctionEnd
+
+; MUI 每插入一个页面就会消费掉该宏，因此每个需要跳过的页面都要单独定义一次。
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfSilent
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfSilent
 !insertmacro MUI_PAGE_DIRECTORY
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfSilent
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfSilent
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -56,7 +72,9 @@ Section "主程序（必需）" SecMain
   SetOutPath "$INSTDIR"
 
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM QiDian.exe /F'
-  Sleep 300
+  Sleep 600
+  ; 覆盖升级：旧文件被占用时先尝试删除，再由 File 写入新版本。
+  Delete "$INSTDIR\QiDian.exe"
 
   File /oname=QiDian.exe "../../qidian-build/QiDian.exe"
   WriteUninstaller "$INSTDIR\uninst.exe"
@@ -90,12 +108,42 @@ Section "-刷新图标缓存"
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 SectionEnd
 
+; 自动更新以 /R 传入时，安装完成后重新启动启点。
+Section "-更新后重启"
+  ${If} $RestartAfter == 1
+    Exec '"$INSTDIR\QiDian.exe"'
+  ${EndIf}
+SectionEnd
+
 Function .onInit
   SetShellVarContext current
+  StrCpy $SilentMode "interactive"
+  StrCpy $RestartAfter "0"
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/S" $R1
+  ${IfNot} ${Errors}
+    StrCpy $SilentMode "silent"
+  ${Else}
+    ClearErrors
+    ${GetOptions} $R0 "/P" $R1
+    ${IfNot} ${Errors}
+      StrCpy $SilentMode "passive"
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "/R" $R1
+  ${IfNot} ${Errors}
+    StrCpy $RestartAfter "1"
+  ${EndIf}
+  ${If} $SilentMode == "silent"
+    SetSilent silent
+  ${EndIf}
   IfFileExists "$PROGRAMFILES32\Microsoft\EdgeWebView\Application\*.*" webview2_ok
   IfFileExists "$PROGRAMFILES64\Microsoft\EdgeWebView\Application\*.*" webview2_ok
   IfFileExists "$LOCALAPPDATA\Microsoft\EdgeWebView\Application\*.*" webview2_ok
-  MessageBox MB_OKCANCEL|MB_ICONINFORMATION "未检测到 Microsoft Edge WebView2 运行时。$\r$\n$\r$\nWindows 11 默认已内置；Windows 10 请先安装 WebView2 后再运行启点。点击“确定”继续安装，或点击“取消”退出。" IDOK webview2_ok
+  ; /SD 保证自动更新（/S 或 /P）时不会卡在提示框上。
+  MessageBox MB_OKCANCEL|MB_ICONINFORMATION|MB_DEFBUTTON1 "未检测到 Microsoft Edge WebView2 运行时。$\r$\n$\r$\nWindows 11 默认已内置；Windows 10 请先安装 WebView2 后再运行启点。点击“确定”继续安装，或点击“取消”退出。" /SD IDOK IDOK webview2_ok
   Abort
   webview2_ok:
 FunctionEnd

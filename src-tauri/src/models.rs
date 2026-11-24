@@ -14,6 +14,8 @@ pub enum AppSource {
     AppsFolder,
     /// 从 Program Files 等安装目录补扫到的程序（可选来源）。
     InstallDir,
+    /// 用户拖入窗口手动添加的程序。
+    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

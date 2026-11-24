@@ -62,6 +62,7 @@
 
 ## 最近更新
 
+- **v3.1.0**（2026-11-24）启动台与工具链升级：新增 F1 预览面板、Ctrl+K 动作菜单（含以管理员身份运行）、拖入 .exe/.lnk/.url 即添加到启动台；修复优化项还原在「原键值本不存在」时残留空值的问题（备份新增存在性判定，旧备份仍可还原）；卸载失败时用 Restart Manager 定位占用进程并支持一键结束后重试；新增「设置 › 关于」里的手动检查更新（不自动联网）与一键导出诊断包；27 处垃圾清理规则改为版本化规则包。
 - **v3.0.0**（2026-11-24）本地 AI 助手插件整体下线：移除对话与工具调用、Qwen2.5 模型下载、Whisper 语音输入与朗读、AI 自动分类、AI 工具权限，以及主界面顶部 AI 标签、设置里的 AI 插件页、安装器的「本地 AI 助手（可选）」勾选项。插件列表收敛为「后台管理 / 系统体检 / 系统优化 / 内存管理 / 应用管理 / 启动与托盘」六项，启动台、体检、优化、内存与后台能力不变；程序不再包含 AI 相关命令与 889 行界面样式，体积与常驻内存同步下降。升级安装不会报错，旧配置中的 AI 字段自动忽略；升级后首次打开窗口会自动清理旧版本留下的模型与运行时目录，并提示释放的空间。
 - **v2.3.0**（2026-10-31）启动与内存占用优化：以 `--autostart` 隐藏启动到托盘时不读壁纸、不校验应用路径、不预热图标、不触发过期扫描，全部推迟到窗口第一次显示；图标预热从「一次 400 个 / 6 线程」改为每批 100 个、最多 4 线程，窗口隐藏或最小化时暂停，回到前台续批；关闭「空闲自动释放」后内存监视线程由 30 秒轮询放宽到 5 分钟（低 / 高内存通知仍即时响应）；Store 应用优先由 Shell 直接激活，不再额外拉起 `explorer.exe`；本地模型按「留一个核心给界面」计算线程数，最多 6 线程。
 - **v2.2.0**（2026-10-29）内存管理插件升级：内存占用最高的应用每行可单独「释放」工作集（不结束进程），行尾盾牌把它加入释放保护名单，「全部应用」与空闲释放都会跳过；摘要新增今日峰值、今日最低可用与今日调节次数，跨天清零、每分钟最多落盘一次。同时 macOS 风格重构为 Finder 布局：侧栏改为通顶毛玻璃、交通灯浮在侧栏上、标题在内容区居中，壁纸只在侧栏里透出、内容区保持不透明；侧栏选中改为灰色填充 + 强调色图标，搜索框改为 NSSearchField，设置分页与筛选 chip 改为分段控件，8 种强调色映射到 Apple 系统色板。修复 macOS 主题模糊「糊了但没透」（窗口大底改透明、侧栏只保留一层模糊，加强档提升到 68px）与浮层二次模糊（设置弹窗 / 右键菜单 / 详情面板 / Toast 改为实色 + 投影），窄窗口下侧栏收成 72px 图标条并同步内容区。
@@ -141,6 +142,19 @@ cd installer && makensis QiDian.nsi
 ```
 
 > 浏览器预览（不依赖 Windows）：`npm run preview`，前端会使用演示数据。
+
+### 维护者：更新签名与发布
+
+- 更新只在用户主动点击时检查，启动、托盘常驻与定时任务都不会联网。
+- 签名私钥：`/workspace/qidian-build/updater.key`（位于仓库之外，**禁止提交**）；公钥写在 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
+- **务必备份私钥**（离线介质 + 密码管理器）。私钥或密码丢失后无法再签发更新，已发布版本将永久无法自动升级。
+- 重新生成密钥（公钥会变，必须同步更新配置）：`npx tauri signer generate -w /workspace/qidian-build/updater.key -p "" --ci`
+- 发布流程：
+  1. 更新版本号（`VERSION` / `package.json` / `tauri.conf.json` / `CHANGELOG.md`），执行 `npm run version:sync`
+  2. `cd src-tauri && cargo xwin build --release --features custom-protocol --target x86_64-pc-windows-msvc`
+  3. `cd installer && makensis QiDian.nsi`
+  4. `node scripts/make-latest-json.mjs --version 3.1.0`（默认签名 `qidian-build/QiDian-Setup-<ver>-x64.exe` 并输出 `qidian-build/latest.json`，可用 `--installer` / `--url` / `--out` / `--key` 覆盖）
+  5. 把安装包、对应 `.sig` 与 `latest.json` 上传到 GitHub Release；`latest.json` 的下载地址默认指向 `releases/download/v<版本>/<安装包名>`
 
 ## 技术栈
 

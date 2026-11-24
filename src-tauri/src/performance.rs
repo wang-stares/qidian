@@ -10,35 +10,9 @@ use std::time::Instant;
 
 const MODULE_ID: &str = "performance";
 const MODULE_VERSION: &str = "1.2.0";
-const ALL_CATEGORIES: [&str; 27] = [
-    "userTemp",
-    "windowsTemp",
-    "updateCache",
-    "logs",
-    "prefetch",
-    "d3dCache",
-    "dxCache",
-    "glCache",
-    "inetCache",
-    "transferCache",
-    "wer",
-    "werSystem",
-    "crashDumps",
-    "minidump",
-    "liveKernel",
-    "eventLogs",
-    "thumbnailCache",
-    "systemTemp32",
-    "chromeCache",
-    "edgeCache",
-    "braveCache",
-    "firefoxCache",
-    "teamsCache",
-    "discordCache",
-    "slackCache",
-    "windowsOld",
-    "recycleBin",
-];
+/// 垃圾清理规则包：编译期嵌入二进制，运行时不需要任何外部文件。
+const CLEANUP_RULES: &str = include_str!("../resources/rules/cleanup-rules.json");
+const CLEANUP_RULES_SCHEMA_VERSION: u32 = 1;
 const HARDWARE_CACHE_TTL: u64 = 7 * 86_400_000;
 const POWER_SAVER: &str = "a1841308-3541-4fab-bc81-f71556f20b4a";
 const POWER_BALANCED: &str = "381b4222-f694-41f0-9685-ff5bb260df2e";
@@ -244,6 +218,7 @@ pub struct DiskUsageScan {
 }
 
 const DISK_USAGE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+#[cfg(windows)]
 static DISK_USAGE_CACHE: Mutex<Option<(Instant, DiskUsageScan)>> = Mutex::new(None);
 
 /// 递归统计单个目录占用，跳过重解析点（junction/symlink）避免死循环。
@@ -920,403 +895,217 @@ struct CleanStats {
     pending: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanupRule {
+    id: String,
+    name: String,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    prefixes: Vec<String>,
+    #[serde(default)]
+    suffixes: Vec<String>,
+    #[serde(default)]
+    special: Option<String>,
+    #[serde(default)]
+    ignore_age: bool,
+}
+
 struct TempTarget {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     /// 一个清理项可能对应多个目录（如浏览器多个 profile 的缓存）。
     paths: Vec<PathBuf>,
     /// 只清理文件名匹配这些前缀的缓存文件，避免误删目录里的其它数据。
-    prefixes: Option<&'static [&'static str]>,
+    prefixes: Option<Vec<String>>,
     /// 只清理文件名以这些后缀结尾的文件（如 ".log"）。
-    suffixes: Option<&'static [&'static str]>,
+    suffixes: Option<Vec<String>>,
     /// 回收站等特殊项走单独的实现，不走文件遍历。
-    special: Option<&'static str>,
+    special: Option<String>,
     /// 缓存/转储类不看修改时间：这些内容删掉会自动重建，
     /// 按保留期过滤反而会把刚用过的缓存全留下，导致「清了还是很多垃圾」。
     ignore_age: bool,
 }
 
-const THUMBNAIL_PREFIXES: &[&str] = &["thumbcache_", "iconcache_"];
+/// 逐条解析规则：单条字段写错只跳过该条，不影响其它清理项。
+fn parse_cleanup_rules(text: &str) -> Vec<CleanupRule> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    if root.get("schemaVersion").and_then(|value| value.as_u64())
+        != Some(u64::from(CLEANUP_RULES_SCHEMA_VERSION))
+    {
+        return Vec::new();
+    }
+    let Some(items) = root.get("targets").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut rules: Vec<CleanupRule> = Vec::new();
+    for item in items {
+        let Ok(rule) = serde_json::from_value::<CleanupRule>(item.clone()) else {
+            continue;
+        };
+        if rule.id.trim().is_empty() || rule.name.trim().is_empty() {
+            continue;
+        }
+        // 未知 special 会让清理走错分支，宁可跳过这一条。
+        if let Some(special) = rule.special.as_deref() {
+            if special != "tree" && special != "recycleBin" {
+                continue;
+            }
+        }
+        if rules.iter().any(|existing| existing.id == rule.id) {
+            continue;
+        }
+        rules.push(rule);
+    }
+    rules
+}
 
-/// 主流 Chromium 内核浏览器的缓存子目录（同一浏览器可能有多个 profile）。
-fn chromium_cache_paths(user_data: PathBuf) -> Vec<PathBuf> {
-    const PROFILES: [&str; 5] = ["Default", "Profile 1", "Profile 2", "Profile 3", "Guest Profile"];
-    const SUBS: [&str; 3] = ["Cache", "Code Cache", "GPUCache"];
+/// 展开 %VAR% 形式的环境变量；WINDIR 缺失时回退到 SystemRoot。
+/// 任一变量不存在就返回 None：旧实现此时会得到空路径列表，不能退化成字面量路径。
+fn expand_env_vars(value: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            result.push_str(&rest[start..]);
+            return Some(result);
+        };
+        let name = &after[..end];
+        let found = std::env::var(name).ok().or_else(|| {
+            if name.eq_ignore_ascii_case("WINDIR") {
+                std::env::var("SystemRoot").ok()
+            } else {
+                None
+            }
+        });
+        result.push_str(&found?);
+        rest = &after[end + 1..];
+    }
+    result.push_str(rest);
+    Some(result)
+}
+
+/// 展开 `{a,b,c}` 形式的固定候选（浏览器 profile 与缓存子目录）。
+fn expand_braces(text: &str) -> Vec<String> {
+    let Some(open) = text.find('{') else {
+        return vec![text.to_string()];
+    };
+    let Some(close) = text[open + 1..].find('}').map(|offset| open + 1 + offset) else {
+        return vec![text.to_string()];
+    };
+    let prefix = &text[..open];
+    let suffix = &text[close + 1..];
+    let mut expanded = Vec::new();
+    for option in text[open + 1..close].split(',') {
+        expanded.extend(expand_braces(&format!("{prefix}{option}{suffix}")));
+    }
+    expanded
+}
+
+/// 展开路径里的 `*` 目录段（Firefox 的 profile 目录名是随机的）。
+fn expand_wildcards(path: &Path) -> Vec<PathBuf> {
+    use std::path::Component;
+
+    if !path.as_os_str().to_string_lossy().contains('*') {
+        return vec![path.to_path_buf()];
+    }
+    let mut bases = vec![PathBuf::new()];
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            if name.to_string_lossy() == "*" {
+                let mut next = Vec::new();
+                for base in &bases {
+                    let dir = if base.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        base.as_path()
+                    };
+                    if let Ok(entries) = fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let candidate = entry.path();
+                            if candidate.is_dir() {
+                                next.push(candidate);
+                            }
+                        }
+                    }
+                }
+                bases = next;
+                continue;
+            }
+        }
+        for base in &mut bases {
+            base.push(component.as_os_str());
+        }
+    }
+    bases
+}
+
+/// 消掉 `..` 与 `.`，让 Windows.old 的显示路径与旧实现一致。
+fn collapse_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other.as_os_str()),
+        }
+    }
+    result
+}
+
+fn compile_path(template: &str) -> Vec<PathBuf> {
+    let Some(expanded) = expand_env_vars(template) else {
+        return Vec::new();
+    };
     let mut paths = Vec::new();
-    for profile in PROFILES {
-        for sub in SUBS {
-            paths.push(user_data.join(profile).join(sub));
+    for candidate in expand_braces(&expanded) {
+        for path in expand_wildcards(Path::new(&candidate)) {
+            paths.push(collapse_path(&path));
         }
     }
     paths
 }
 
-/// Firefox 的 profile 目录名随机，运行时枚举后取各自的 cache2。
-fn firefox_cache_paths(local: &Path) -> Vec<PathBuf> {
-    let profiles = local.join("Mozilla").join("Firefox").join("Profiles");
-    let mut paths = Vec::new();
-    if let Ok(entries) = fs::read_dir(&profiles) {
-        for entry in entries.flatten() {
-            paths.push(entry.path().join("cache2"));
-        }
+fn optional_list(values: Vec<String>) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
     }
-    paths
 }
 
-/// Electron 类应用（Teams / Discord / Slack）的缓存子目录。
-fn electron_cache_paths(app_dir: PathBuf) -> Vec<PathBuf> {
-    const SUBS: [&str; 4] = ["Cache", "Code Cache", "GPUCache", "DawnCache"];
-    SUBS.iter().map(|sub| app_dir.join(sub)).collect()
+fn rule_targets(rules: Vec<CleanupRule>) -> Vec<TempTarget> {
+    let mut targets = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let mut paths = Vec::new();
+        for template in &rule.paths {
+            paths.extend(compile_path(template));
+        }
+        targets.push(TempTarget {
+            id: rule.id,
+            name: rule.name,
+            paths,
+            prefixes: optional_list(rule.prefixes),
+            suffixes: optional_list(rule.suffixes),
+            special: rule.special,
+            ignore_age: rule.ignore_age,
+        });
+    }
+    targets.sort_by(|a, b| a.id.cmp(&b.id));
+    targets
 }
 
 fn temp_targets() -> Vec<TempTarget> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let roaming = std::env::var_os("APPDATA").map(PathBuf::from);
-    let windows_root = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot"));
-    let system_temp = windows_root.as_ref().map(|path| PathBuf::from(path).join("Temp"));
-    let update_download = windows_root.as_ref().map(|path| {
-        PathBuf::from(path)
-            .join("SoftwareDistribution")
-            .join("Download")
-    });
-    let system_logs = windows_root.as_ref().map(|path| PathBuf::from(path).join("Logs"));
-    let prefetch = windows_root.as_ref().map(|path| PathBuf::from(path).join("Prefetch"));
-    // 传递优化（Delivery Optimization）P2P 更新缓存，位于网络服务用户目录，通常是几 GB 的大块头。
-    let transfer_cache = windows_root.as_ref().map(|path| {
-        PathBuf::from(path)
-            .join("ServiceProfiles")
-            .join("NetworkService")
-            .join("AppData")
-            .join("Local")
-            .join("Microsoft")
-            .join("Windows")
-            .join("DeliveryOptimization")
-            .join("Cache")
-    });
-    // 系统级 Windows 错误报告（用户级 WER 单独列出）。
-    let program_data = std::env::var_os("PROGRAMDATA").map(PathBuf::from);
-    let wer_system = program_data
-        .as_ref()
-        .map(|path| path.join("Microsoft").join("Windows").join("WER"));
-    // 事件日志目录：当前被占用的 .evtx 会安排重启后删除。
-    let event_logs = windows_root.as_ref().map(|path| {
-        PathBuf::from(path)
-            .join("System32")
-            .join("winevt")
-            .join("Logs")
-    });
-    // 升级 Windows 后遗留的旧系统目录，通常 10 GB 以上。
-    let windows_old = windows_root
-        .as_ref()
-        .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
-        .map(|root| root.join("Windows.old"));
-
-    let mut targets = vec![
-        TempTarget {
-            id: "userTemp",
-            name: "用户临时文件",
-            paths: std::env::var_os("TEMP").map(PathBuf::from).into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "windowsTemp",
-            name: "Windows 临时文件",
-            paths: system_temp.into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "updateCache",
-            name: "Windows 更新下载缓存",
-            paths: update_download.into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "logs",
-            name: "系统日志文件",
-            paths: system_logs.into_iter().collect(),
-            prefixes: None,
-            suffixes: Some(&["log"]),
-            ignore_age: false,
-            special: None,
-        },
-        TempTarget {
-            id: "prefetch",
-            name: "预读取缓存",
-            paths: prefetch.into_iter().collect(),
-            prefixes: None,
-            suffixes: Some(&["pf"]),
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "d3dCache",
-            name: "DirectX 着色器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("D3DSCache")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "dxCache",
-            name: "DXCache 缓存",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("DXCache")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "glCache",
-            name: "OpenGL 着色器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("GLCache")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "inetCache",
-            name: "IE/兼容性网络缓存",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("Microsoft").join("Windows").join("INetCache")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "transferCache",
-            name: "更新 P2P 传递缓存",
-            paths: transfer_cache.into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "wer",
-            name: "Windows 错误报告（用户）",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("Microsoft").join("Windows").join("WER")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "werSystem",
-            name: "Windows 错误报告（系统）",
-            paths: wer_system.into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "crashDumps",
-            name: "应用崩溃转储",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("CrashDumps")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "minidump",
-            name: "蓝屏小转储",
-            paths: windows_root
-                .as_ref()
-                .map(|path| vec![PathBuf::from(path).join("Minidump")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "liveKernel",
-            name: "内核实时转储",
-            paths: windows_root
-                .as_ref()
-                .map(|path| vec![PathBuf::from(path).join("LiveKernelReports")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "eventLogs",
-            name: "系统事件日志",
-            paths: event_logs.into_iter().collect(),
-            prefixes: None,
-            suffixes: Some(&["evtx"]),
-            ignore_age: false,
-            special: None,
-        },
-        TempTarget {
-            id: "thumbnailCache",
-            name: "缩略图与图标缓存",
-            paths: local
-                .as_ref()
-                .map(|path| vec![path.join("Microsoft").join("Windows").join("Explorer")])
-                .unwrap_or_default(),
-            prefixes: Some(THUMBNAIL_PREFIXES),
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "systemTemp32",
-            name: "系统临时目录（32 位）",
-            paths: windows_root
-                .as_ref()
-                .map(|path| vec![PathBuf::from(path).join("SystemTemp")])
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "chromeCache",
-            name: "Chrome 浏览器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| {
-                    chromium_cache_paths(
-                        path.join("Google").join("Chrome").join("User Data"),
-                    )
-                })
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "edgeCache",
-            name: "Edge 浏览器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| chromium_cache_paths(path.join("Microsoft").join("Edge").join("User Data")))
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "braveCache",
-            name: "Brave 浏览器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| {
-                    chromium_cache_paths(
-                        path.join("BraveSoftware").join("Brave-Browser").join("User Data"),
-                    )
-                })
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "firefoxCache",
-            name: "Firefox 浏览器缓存",
-            paths: local
-                .as_ref()
-                .map(|path| firefox_cache_paths(path))
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "teamsCache",
-            name: "Teams 应用缓存",
-            paths: roaming
-                .as_ref()
-                .map(|path| electron_cache_paths(path.join("Microsoft").join("Teams")))
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "discordCache",
-            name: "Discord 应用缓存",
-            paths: roaming
-                .as_ref()
-                .map(|path| electron_cache_paths(path.join("discord")))
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "slackCache",
-            name: "Slack 应用缓存",
-            paths: roaming
-                .as_ref()
-                .map(|path| electron_cache_paths(path.join("Slack")))
-                .unwrap_or_default(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: None,
-        },
-        TempTarget {
-            id: "windowsOld",
-            name: "旧系统目录 Windows.old",
-            paths: windows_old.into_iter().collect(),
-            prefixes: None,
-            suffixes: None,
-            ignore_age: true,
-            special: Some("tree"),
-        },
-        TempTarget {
-            id: "recycleBin",
-            name: "回收站",
-            paths: Vec::new(),
-            prefixes: None,
-            suffixes: None,
-            special: Some("recycleBin"),
-            ignore_age: false,
-        },
-    ];
-    targets.sort_by_key(|target| target.id);
-    targets
+    rule_targets(parse_cleanup_rules(CLEANUP_RULES))
 }
 
 /// 回收站按整个用户统计，不按文件修改时间过滤。
@@ -1383,7 +1172,7 @@ pub fn scan_temp(base: &Path, days: u32) -> Result<TempScan, String> {
     let mut total_files = 0u64;
 
     for target in temp_targets() {
-        let (path, accessible, stats, error) = if target.special == Some("recycleBin") {
+        let (path, accessible, stats, error) = if target.special.as_deref() == Some("recycleBin") {
             match recycle_bin_stats() {
                 Ok((bytes, items)) => (
                     "回收站 · 所有磁盘".to_string(),
@@ -1423,7 +1212,13 @@ pub fn scan_temp(base: &Path, days: u32) -> Result<TempScan, String> {
                 if first_path.is_none() {
                     first_path = Some(dir.to_string_lossy().to_string());
                 }
-                match scan_root(dir, cutoff, target.prefixes, target.suffixes, target.ignore_age) {
+                match scan_root(
+                    dir,
+                    cutoff,
+                    target.prefixes.as_deref(),
+                    target.suffixes.as_deref(),
+                    target.ignore_age,
+                ) {
                     Ok(part) => {
                         stats.bytes += part.bytes;
                         stats.files += part.files;
@@ -1455,8 +1250,8 @@ pub fn scan_temp(base: &Path, days: u32) -> Result<TempScan, String> {
         total_bytes += stats.bytes;
         total_files += stats.files;
         categories.push(TempCategory {
-            id: target.id.to_string(),
-            name: target.name.to_string(),
+            id: target.id,
+            name: target.name,
             path,
             bytes: stats.bytes,
             files: stats.files,
@@ -1478,9 +1273,10 @@ pub fn clean_temp(base: &Path, categories: Vec<String>, days: u32) -> Result<Cle
     require_opt_installed(base)?;
     let days = days.clamp(1, 90);
     let cutoff = cutoff_for(days);
+    let targets = temp_targets();
     let mut wanted: Vec<String> = categories
         .into_iter()
-        .filter(|id| ALL_CATEGORIES.contains(&id.as_str()))
+        .filter(|id| targets.iter().any(|target| &target.id == id))
         .collect();
     wanted.sort();
     wanted.dedup();
@@ -1495,16 +1291,17 @@ pub fn clean_temp(base: &Path, categories: Vec<String>, days: u32) -> Result<Cle
         pending_reboot: 0,
         categories: Vec::new(),
     };
-    for target in temp_targets() {
-        if !wanted.iter().any(|id| id == target.id) {
+    for target in &targets {
+        if !wanted.iter().any(|id| id == &target.id) {
             continue;
         }
-        let (freed_bytes, files, failed, pending_reboot, error) = if target.special == Some("recycleBin") {
+        let special = target.special.as_deref();
+        let (freed_bytes, files, failed, pending_reboot, error) = if special == Some("recycleBin") {
             match empty_recycle_bin() {
                 Ok((bytes, items)) => (bytes, items, 0, 0, None),
                 Err(error) => (0, 0, 0, 0, Some(error)),
             }
-        } else if target.special == Some("tree") {
+        } else if special == Some("tree") {
             // 整棵目录删除（如 Windows.old）：逐个文件走 takeown 太慢，
             // 交给强删引擎一次性处理，删不掉的部分自动安排重启后删除。
             let mut freed = 0u64;
@@ -1555,7 +1352,13 @@ pub fn clean_temp(base: &Path, categories: Vec<String>, days: u32) -> Result<Cle
                     continue;
                 }
                 existing += 1;
-                match clean_root(dir, cutoff, target.prefixes, target.suffixes, target.ignore_age) {
+                match clean_root(
+                    dir,
+                    cutoff,
+                    target.prefixes.as_deref(),
+                    target.suffixes.as_deref(),
+                    target.ignore_age,
+                ) {
                     Ok(stats) => {
                         freed += stats.freed_bytes;
                         count += stats.files;
@@ -1593,8 +1396,8 @@ pub fn clean_temp(base: &Path, categories: Vec<String>, days: u32) -> Result<Cle
         result.failed += failed;
         result.pending_reboot += pending_reboot;
         result.categories.push(CleanCategory {
-            id: target.id.to_string(),
-            name: target.name.to_string(),
+            id: target.id.clone(),
+            name: target.name.clone(),
             freed_bytes,
             files,
             failed,
@@ -1606,18 +1409,18 @@ pub fn clean_temp(base: &Path, categories: Vec<String>, days: u32) -> Result<Cle
     Ok(result)
 }
 
-fn matches_filter(path: &Path, prefixes: Option<&[&str]>, suffixes: Option<&[&str]>) -> bool {
+fn matches_filter(path: &Path, prefixes: Option<&[String]>, suffixes: Option<&[String]>) -> bool {
     let name = path
         .file_name()
         .map(|value| value.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if let Some(prefixes) = prefixes {
-        if !prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+        if !prefixes.iter().any(|prefix| name.starts_with(prefix.as_str())) {
             return false;
         }
     }
     if let Some(suffixes) = suffixes {
-        if !suffixes.iter().any(|suffix| name.ends_with(suffix)) {
+        if !suffixes.iter().any(|suffix| name.ends_with(suffix.as_str())) {
             return false;
         }
     }
@@ -1627,8 +1430,8 @@ fn matches_filter(path: &Path, prefixes: Option<&[&str]>, suffixes: Option<&[&st
 fn scan_root(
     root: &Path,
     cutoff: SystemTime,
-    prefixes: Option<&[&str]>,
-    suffixes: Option<&[&str]>,
+    prefixes: Option<&[String]>,
+    suffixes: Option<&[String]>,
     ignore_age: bool,
 ) -> Result<ScanStats, String> {
     let mut stack = vec![root.to_path_buf()];
@@ -1694,8 +1497,8 @@ fn scan_root(
 fn clean_root(
     root: &Path,
     cutoff: SystemTime,
-    prefixes: Option<&[&str]>,
-    suffixes: Option<&[&str]>,
+    prefixes: Option<&[String]>,
+    suffixes: Option<&[String]>,
     ignore_age: bool,
 ) -> Result<CleanStats, String> {
     let mut stack = vec![root.to_path_buf()];
@@ -1969,4 +1772,96 @@ fn run_hidden(program: &str, args: &[&str]) -> Result<(bool, String), String> {
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 改造前后必须完全一致的 27 个分类与展示名称。
+    const EXPECTED: [(&str, &str); 27] = [
+        ("userTemp", "用户临时文件"),
+        ("windowsTemp", "Windows 临时文件"),
+        ("updateCache", "Windows 更新下载缓存"),
+        ("logs", "系统日志文件"),
+        ("prefetch", "预读取缓存"),
+        ("d3dCache", "DirectX 着色器缓存"),
+        ("dxCache", "DXCache 缓存"),
+        ("glCache", "OpenGL 着色器缓存"),
+        ("inetCache", "IE/兼容性网络缓存"),
+        ("transferCache", "更新 P2P 传递缓存"),
+        ("wer", "Windows 错误报告（用户）"),
+        ("werSystem", "Windows 错误报告（系统）"),
+        ("crashDumps", "应用崩溃转储"),
+        ("minidump", "蓝屏小转储"),
+        ("liveKernel", "内核实时转储"),
+        ("eventLogs", "系统事件日志"),
+        ("thumbnailCache", "缩略图与图标缓存"),
+        ("systemTemp32", "系统临时目录（32 位）"),
+        ("chromeCache", "Chrome 浏览器缓存"),
+        ("edgeCache", "Edge 浏览器缓存"),
+        ("braveCache", "Brave 浏览器缓存"),
+        ("firefoxCache", "Firefox 浏览器缓存"),
+        ("teamsCache", "Teams 应用缓存"),
+        ("discordCache", "Discord 应用缓存"),
+        ("slackCache", "Slack 应用缓存"),
+        ("windowsOld", "旧系统目录 Windows.old"),
+        ("recycleBin", "回收站"),
+    ];
+
+    #[test]
+    fn rule_package_parses_27_targets() {
+        let rules = parse_cleanup_rules(CLEANUP_RULES);
+        assert_eq!(rules.len(), 27);
+        // 分类数量与名称逐项核对，防止规则包漂移。
+        for (id, name) in EXPECTED {
+            let rule = rules
+                .iter()
+                .find(|rule| rule.id == id)
+                .unwrap_or_else(|| panic!("缺少清理项 {id}"));
+            assert_eq!(rule.name, name, "清理项 {id} 的展示名称不一致");
+        }
+        // 编译后的目标数量同样必须是 27，即使浏览器未安装也不能少分类。
+        assert_eq!(rule_targets(rules).len(), 27);
+    }
+
+    #[test]
+    fn bad_rule_is_skipped_without_failing_scan() {
+        let text = r#"{
+            "schemaVersion": 1,
+            "targets": [
+                {"id": "good", "name": "好", "paths": ["%TEMP%"], "ignoreAge": true},
+                {"id": "", "name": "空 id", "paths": []},
+                {"id": "wrongType", "name": "类型错", "paths": ["%TEMP%"], "ignoreAge": "yes"},
+                {"id": "unknownSpecial", "name": "未知分支", "paths": [], "special": "deleteAll"},
+                {"id": "good", "name": "重复", "paths": []},
+                {"id": "good2", "name": "好 2", "paths": ["%TEMP%"], "ignoreAge": false}
+            ]
+        }"#;
+        let ids: Vec<String> = parse_cleanup_rules(text)
+            .into_iter()
+            .map(|rule| rule.id)
+            .collect();
+        assert_eq!(ids, vec!["good".to_string(), "good2".to_string()]);
+    }
+
+    #[test]
+    fn schema_version_mismatch_is_rejected() {
+        let text = r#"{"schemaVersion": 99, "targets": [{"id": "a", "name": "A", "paths": []}]}"#;
+        assert!(parse_cleanup_rules(text).is_empty());
+    }
+
+    /// 浏览器规则用固定候选展开，路径数量必须与旧的 profile × 缓存目录一致。
+    #[test]
+    fn chromium_rule_expands_to_fifteen_paths() {
+        let paths = compile_path(r"C:\Test\{Default,Profile 1,Profile 2,Profile 3,Guest Profile}\{Cache,Code Cache,GPUCache}");
+        assert_eq!(paths.len(), 15);
+    }
+
+    /// 环境变量缺失时与旧实现一样得到空路径，而不是保留 %VAR% 字面量。
+    #[test]
+    fn missing_env_var_yields_no_paths() {
+        assert_eq!(expand_env_vars("%CLEANUP_RULES_TEST_UNSET%\\x"), None);
+        assert!(compile_path("%CLEANUP_RULES_TEST_UNSET%\\x").is_empty());
+    }
 }

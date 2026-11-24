@@ -15,6 +15,7 @@
     "core:window:allow-is-minimized",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-start-dragging",
-    "core:event:allow-listen"
+    "core:event:allow-listen",
+    "updater:default"
   ]
 }

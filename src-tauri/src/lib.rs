@@ -1,5 +1,6 @@
 mod autostart;
 mod cleanup;
+mod diagnostics;
 mod force_delete;
 mod icons;
 mod launch;
@@ -14,6 +15,7 @@ mod processes;
 mod scanner;
 mod startup;
 mod store;
+mod updater;
 
 use models::{
     AppEntry, AppSource, Bootstrap, LaunchTarget, ProcessItem, ProcessTarget, ScanCache,
@@ -214,6 +216,8 @@ async fn scan_apps(
         .into_iter()
         .map(|item| (item.entry.id.clone(), item))
         .collect();
+    let mut index = index;
+    merge_custom_apps(&mut index, &state.paths);
     let mut apps: Vec<AppEntry> = index.values().map(|item| item.entry.clone()).collect();
     sort_apps(&mut apps);
 
@@ -293,6 +297,112 @@ fn launch_app(state: State<'_, AppState>, id: String) -> Result<(), String> {
     launch::launch(&target)?;
     record_usage(&state, &id);
     Ok(())
+}
+
+#[tauri::command]
+fn launch_app_as_admin(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let target = {
+        let apps = state
+            .apps
+            .lock()
+            .map_err(|_| "应用索引不可用".to_string())?;
+        apps.get(&id)
+            .map(|item| item.target.clone())
+            .ok_or_else(|| "应用不存在或索引已刷新".to_string())?
+    };
+    launch::launch_as_admin(&target)?;
+    record_usage(&state, &id);
+    Ok(())
+}
+
+/// 拖入窗口添加应用：只接受 .exe / .lnk / .url，重复路径返回已有条目。
+#[tauri::command]
+fn add_custom_app(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Option<AppEntry>, String> {
+    let trimmed = path.trim().trim_matches('"');
+    let source = std::path::Path::new(trimmed);
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let ext = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "exe" | "lnk" | "url") {
+        return Ok(None);
+    }
+    let name = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("未命名程序")
+        .to_string();
+    let id = custom_app_id(trimmed);
+    if let Ok(apps) = state.apps.lock() {
+        if let Some(existing) = apps.get(&id) {
+            return Ok(Some(existing.entry.clone()));
+        }
+    }
+    let parent = source
+        .parent()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string());
+    let target = if ext == "exe" {
+        LaunchTarget::Executable {
+            path: trimmed.to_string(),
+            args: None,
+            workdir: parent.clone(),
+        }
+    } else {
+        // .lnk / .url 交给 Shell 解析，启动参数在快捷方式内部，不需要拆开。
+        LaunchTarget::Shortcut {
+            path: trimmed.to_string(),
+        }
+    };
+    let entry = AppEntry {
+        id: id.clone(),
+        name,
+        category: "other".to_string(),
+        publisher: None,
+        version: None,
+        source: AppSource::Custom,
+        install_location: parent,
+        shortcut_path: Some(trimmed.to_string()),
+        launchable: true,
+    };
+    let item = ScannedApp {
+        entry: entry.clone(),
+        target,
+    };
+
+    let mut stored = store::load_custom_apps(&state.paths);
+    stored.retain(|app| app.entry.id != id);
+    stored.push(item.clone());
+    store::save_custom_apps(&state.paths, &stored)?;
+
+    if let Ok(mut apps) = state.apps.lock() {
+        apps.insert(id, item);
+    }
+    Ok(Some(entry))
+}
+
+/// 路径转稳定 id：FNV-1a，只用于去重，不做安全用途。
+fn custom_app_id(path: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path.to_ascii_lowercase().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("custom:{hash:016x}")
+}
+
+/// 把用户添加的应用合并进索引；扫描结果里已有的同 id 条目不重复覆盖。
+fn merge_custom_apps(apps: &mut HashMap<String, ScannedApp>, paths: &store::Paths) {
+    for item in store::load_custom_apps(paths) {
+        apps.entry(item.entry.id.clone()).or_insert(item);
+    }
 }
 
 /// 记录一次启动，供启动台「常用优先」排序使用。
@@ -619,6 +729,13 @@ async fn cleanup_delete(
 #[tauri::command]
 fn cleanup_open(state: State<'_, AppState>, path: String) -> Result<(), String> {
     cleanup::open(&state.paths.base, &path)
+}
+
+/// 查询哪些进程正占用给定路径（Restart Manager），供删除失败时提示用户先关闭。
+#[tauri::command]
+fn check_path_locks(paths: Vec<String>) -> Result<Vec<cleanup::LockedProcess>, String> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
+    Ok(cleanup::file_locks(&paths))
 }
 
 #[tauri::command]
@@ -1596,6 +1713,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
+        // 更新插件只提供手动检查能力，不注册任何启动检查或后台任务。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -1638,6 +1757,8 @@ pub fn run() {
         })
         .setup(|app| {
             let paths = store::Paths::resolve(app.handle()).map_err(std::io::Error::other)?;
+            // 崩溃日志只落到本地数据目录，不联网、不常驻线程。
+            diagnostics::install_panic_hook(&paths.base);
             let settings = store::load_settings(&paths);
             if !paths.settings.exists() {
                 let _ = store::save_settings(&paths, &settings);
@@ -1645,7 +1766,7 @@ pub fn run() {
             // 先拿缓存立刻显示窗口，失效条目的校验交给异步 prune，避免启动时逐项检查文件。
             // 缓存结构升级后忽略旧缓存，让前端自动重扫一次，应用合并规则立即生效。
             let cache = store::load_cache(&paths).ok().flatten();
-            let (apps, cache_at) = match cache {
+            let (mut apps, cache_at) = match cache {
                 Some(cache) if cache.schema == scanner::CACHE_SCHEMA => {
                     let mut map = HashMap::new();
                     for item in cache.apps {
@@ -1657,6 +1778,8 @@ pub fn run() {
             };
 
             let base = paths.base.clone();
+            // 用户拖入添加的应用不在扫描缓存里，启动时补进索引。
+            merge_custom_apps(&mut apps, &paths);
             app.manage(AppState {
                 paths,
                 settings: Mutex::new(settings),
@@ -1713,6 +1836,8 @@ pub fn run() {
             load_icons,
             warm_icons,
             launch_app,
+            launch_app_as_admin,
+            add_custom_app,
             reveal_app,
             save_settings,
             reset_settings,
@@ -1731,6 +1856,7 @@ pub fn run() {
             cleanup_legacy_ai,
             cleanup_scan,
             cleanup_delete,
+            check_path_locks,
             cleanup_open,
             cleanup_apps,
             cleanup_uninstall,
@@ -1763,7 +1889,10 @@ pub fn run() {
             memory_trim_app,
             memory_purge_system,
             quit_app,
-            set_memory_saver
+            set_memory_saver,
+            updater::check_update,
+            updater::install_update,
+            diagnostics::export_diagnostics
         ])
         .build(tauri::generate_context!())
         .expect("error while building QiDian")

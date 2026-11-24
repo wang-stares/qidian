@@ -1064,9 +1064,64 @@ struct BackupFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupValue {
+    /// 变更前该注册表值是否存在。不存在时还原必须删除值，而不是写回空值。
     existed: bool,
-    #[serde(default)]
+    /// 变更前该注册表键是否存在。只有原本不存在的键才允许在还原时回收。
+    ///
+    /// 兼容取舍：升级前的备份没有这个字段，缺失时按 true 处理——宁可留下一个空键，
+    /// 也不误删用户原有的键。
+    #[serde(default = "default_true")]
+    key_existed: bool,
+    /// 旧备份只记录 DWORD 原值；新备份不再写入此字段，仅用于兼容读取。
+    #[serde(default, skip_serializing)]
     value: u32,
+    /// 原值的数据类型（Windows REG_* 编号），用于精确还原。
+    /// 旧备份缺失时按 REG_DWORD 处理。
+    #[serde(default = "default_dword_kind")]
+    kind: u32,
+    /// 原值的原始字节；旧备份为空时按 DWORD 的 value 还原。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    data: Vec<u8>,
+}
+
+/// REG_DWORD 的类型编号；写成常量便于非 Windows 测试也能校验兼容逻辑。
+const REG_DWORD_KIND: u32 = 4;
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_dword_kind() -> u32 {
+    REG_DWORD_KIND
+}
+
+/// 变更前的值快照：值是否存在、键是否存在、原值类型与原始字节。
+#[derive(Debug, Clone)]
+struct ValueSnapshot {
+    current: Option<u32>,
+    key_existed: bool,
+    kind: u32,
+    data: Vec<u8>,
+}
+
+/// 还原动作只取决于变更前值是否存在：存在则精确写回，不存在则删除。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreAction {
+    Restore,
+    Delete,
+}
+
+fn restore_action(previous: &BackupValue) -> RestoreAction {
+    if previous.existed {
+        RestoreAction::Restore
+    } else {
+        RestoreAction::Delete
+    }
+}
+
+/// 只有明确记录「键原本不存在」时才允许回收本次新建的空键。
+fn may_delete_created_key(previous: &BackupValue) -> bool {
+    !previous.key_existed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1198,27 +1253,149 @@ fn write_value(value: &ValueDef, target: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn reg_type_from_u32(kind: u32) -> Option<winreg::enums::RegType> {
+    use winreg::enums::*;
+    Some(match kind {
+        0 => REG_NONE,
+        1 => REG_SZ,
+        2 => REG_EXPAND_SZ,
+        3 => REG_BINARY,
+        4 => REG_DWORD,
+        5 => REG_DWORD_BIG_ENDIAN,
+        6 => REG_LINK,
+        7 => REG_MULTI_SZ,
+        8 => REG_RESOURCE_LIST,
+        9 => REG_FULL_RESOURCE_DESCRIPTOR,
+        10 => REG_RESOURCE_REQUIREMENTS_LIST,
+        11 => REG_QWORD,
+        _ => return None,
+    })
+}
+
+/// 一次性读取变更前的完整快照：值/键是否存在、原值类型与原始字节。
+#[cfg(windows)]
+fn read_snapshot(value: &ValueDef) -> Result<ValueSnapshot, String> {
+    use winreg::enums::REG_DWORD;
+
+    let key = match root(value.hive).open_subkey(value.key) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ValueSnapshot {
+                current: None,
+                key_existed: false,
+                kind: REG_DWORD_KIND,
+                data: Vec::new(),
+            });
+        }
+        Err(error) => return Err(format!("无法打开 {}：{error}", value.key)),
+    };
+    match key.get_raw_value(value.name) {
+        Ok(raw) => {
+            // 与旧逻辑保持一致：只把 DWORD 视为可比较的值，其它类型不参与优化。
+            if raw.vtype != REG_DWORD || raw.bytes.len() != 4 {
+                return Err(format!("无法读取 {}：不是 DWORD 类型", value.name));
+            }
+            let bytes: [u8; 4] = raw.bytes[..4]
+                .try_into()
+                .map_err(|_| format!("无法读取 {}：数据长度异常", value.name))?;
+            Ok(ValueSnapshot {
+                current: Some(u32::from_le_bytes(bytes)),
+                key_existed: true,
+                kind: raw.vtype as u32,
+                data: raw.bytes,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ValueSnapshot {
+            current: None,
+            key_existed: true,
+            kind: REG_DWORD_KIND,
+            data: Vec::new(),
+        }),
+        Err(error) => Err(format!("无法读取 {}：{error}", value.name)),
+    }
+}
+
+#[cfg(not(windows))]
+fn read_snapshot(_value: &ValueDef) -> Result<ValueSnapshot, String> {
+    Err("一键优化目前只支持 Windows".to_string())
+}
+
+#[cfg(windows)]
 fn restore_value(value: &ValueDef, previous: &BackupValue) -> Result<(), String> {
     use winreg::enums::KEY_SET_VALUE;
 
-    if previous.existed {
-        let (key, _) = root(value.hive)
-            .create_subkey(value.key)
-            .map_err(|error| format!("无法写入 {}：{}", value.key, reg_error_text(&error)))?;
-        return key
-            .set_value(value.name, &previous.value)
-            .map_err(|error| format!("无法还原 {}：{}", value.name, reg_error_text(&error)));
-    }
-    match root(value.hive).open_subkey_with_flags(value.key, KEY_SET_VALUE) {
-        Ok(key) => match key.delete_value(value.name) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("无法删除 {}：{}", value.name, reg_error_text(&error))),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("无法打开 {}：{}", value.key, reg_error_text(&error))),
+    match restore_action(previous) {
+        RestoreAction::Restore => {
+            let (key, _) = root(value.hive)
+                .create_subkey(value.key)
+                .map_err(|error| format!("无法写入 {}：{}", value.key, reg_error_text(&error)))?;
+            // 新备份带原始字节与类型，按原类型精确写回；旧备份退回 DWORD。
+            if let (Some(vtype), false) =
+                (reg_type_from_u32(previous.kind), previous.data.is_empty())
+            {
+                let raw = winreg::RegValue {
+                    bytes: previous.data.clone(),
+                    vtype,
+                };
+                return key.set_raw_value(value.name, &raw).map_err(|error| {
+                    format!("无法还原 {}：{}", value.name, reg_error_text(&error))
+                });
+            }
+            key.set_value(value.name, &previous.value)
+                .map_err(|error| format!("无法还原 {}：{}", value.name, reg_error_text(&error)))
+        }
+        RestoreAction::Delete => {
+            match root(value.hive).open_subkey_with_flags(value.key, KEY_SET_VALUE) {
+                Ok(key) => match key.delete_value(value.name) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(format!(
+                        "无法删除 {}：{}",
+                        value.name,
+                        reg_error_text(&error)
+                    )),
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "无法打开 {}：{}",
+                    value.key,
+                    reg_error_text(&error)
+                )),
+            }
+        }
     }
 }
+
+/// 还原后回收本次优化新建、且已经空白的键；原有键一律保留。
+#[cfg(windows)]
+fn remove_created_key_if_empty(value: &ValueDef) {
+    use winreg::enums::{KEY_READ, KEY_WRITE};
+
+    // RegDeleteKey 需要 DELETE 权限，父键打开时一并申请。
+    const DELETE_ACCESS: u32 = 0x0001_0000;
+    let Some((parent, leaf)) = value.key.rsplit_once('\\') else {
+        return;
+    };
+    let Ok(parent_key) =
+        root(value.hive).open_subkey_with_flags(parent, KEY_READ | KEY_WRITE | DELETE_ACCESS)
+    else {
+        return;
+    };
+    let Ok(key) = parent_key.open_subkey_with_flags(leaf, KEY_READ) else {
+        return;
+    };
+    // 键里还有子键或值说明不是空壳（可能被其它程序复用），不能删。
+    // 枚举本身出错时也会产出条目，按「非空」处理更保守。
+    let has_keys = key.enum_keys().next().is_some();
+    let has_values = key.enum_values().next().is_some();
+    if has_keys || has_values {
+        return;
+    }
+    let _ = parent_key.delete_subkey(leaf);
+}
+
+#[cfg(not(windows))]
+fn remove_created_key_if_empty(_value: &ValueDef) {}
 
 /// 把注册表「拒绝访问」（ERROR_ACCESS_DENIED）翻译成可操作的中文提示，
 /// 按当前进程是否已提权区分是「权限不够」还是「被系统/安全软件保护」。
@@ -1379,11 +1556,12 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
         }
 
         // 先完整读取，任一值读不到就不写入，避免留下半套配置。
-        let mut current = Vec::with_capacity(item.values.len());
+        // 快照同时记录「值/键原本是否存在」与原始字节，供还原分支使用。
+        let mut snapshots = Vec::with_capacity(item.values.len());
         let mut failure: Option<String> = None;
         for value in item.values {
-            match read_value(value) {
-                Ok(existing) => current.push(existing),
+            match read_snapshot(value) {
+                Ok(snapshot) => snapshots.push(snapshot),
                 Err(error) => {
                     failure = Some(error);
                     break;
@@ -1397,6 +1575,7 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
             });
             continue;
         }
+        let current: Vec<Option<u32>> = snapshots.iter().map(|snapshot| snapshot.current).collect();
 
         let targets: Vec<u32> = item
             .values
@@ -1419,7 +1598,7 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
 
         // 记录将被改动值的原值；已备份过的保留最早那次的原值。
         let mut inserted = Vec::new();
-        for (value, existing) in item.values.iter().zip(&current) {
+        for (value, snapshot) in item.values.iter().zip(&snapshots) {
             let key = backup_key(value);
             if backup.values.contains_key(&key) {
                 continue;
@@ -1427,8 +1606,11 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
             backup.values.insert(
                 key.clone(),
                 BackupValue {
-                    existed: existing.is_some(),
-                    value: existing.unwrap_or(0),
+                    existed: snapshot.current.is_some(),
+                    key_existed: snapshot.key_existed,
+                    value: snapshot.current.unwrap_or(0),
+                    kind: snapshot.kind,
+                    data: snapshot.data.clone(),
                 },
             );
             inserted.push(key);
@@ -1481,6 +1663,14 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
                     let _ = restore_value(value, previous);
                 }
             }
+            // 回滚同样要回收本次新建的空键，避免校验失败后残留空壳。
+            for value in written.iter().copied() {
+                if let Some(previous) = backup.values.get(&backup_key(value)) {
+                    if may_delete_created_key(previous) {
+                        remove_created_key_if_empty(value);
+                    }
+                }
+            }
             for key in inserted {
                 backup.values.remove(&key);
             }
@@ -1494,7 +1684,8 @@ fn apply_local(base: &Path, ids: &[String]) -> Result<OptimizeOutcome, String> {
         changed.push(id.clone());
     }
 
-    backup.version = 1;
+    // v2 增加 keyExisted / kind / data；旧 v1 备份仍可读取并按「原本存在」还原。
+    backup.version = 2;
     save_backup(base, &backup)?;
     Ok(OptimizeOutcome {
         message: outcome_message("已优化", &changed, &skipped),
@@ -1556,6 +1747,16 @@ fn restore_local(base: &Path, ids: &[String], all: bool) -> Result<OptimizeOutco
                 break;
             }
             restored.push(key);
+        }
+        // 值还原成功后再回收本次新建的空键；任一步失败都保留原状。
+        if failure.is_none() {
+            for value in item.values {
+                if let Some(previous) = backup.values.get(&backup_key(value)) {
+                    if may_delete_created_key(previous) {
+                        remove_created_key_if_empty(value);
+                    }
+                }
+            }
         }
         for key in restored {
             backup.values.remove(&key);
@@ -1821,4 +2022,58 @@ pub fn run_cli() -> Option<i32> {
         }
     }
     Some(if result.ok { 0 } else { 1 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧备份只有 existed/value：新字段缺失时必须按「原本存在」处理，
+    /// 保留旧行为（写回原值、不删键）。
+    #[test]
+    fn legacy_backup_defaults_to_existing() {
+        let legacy: BackupValue = serde_json::from_str(r#"{"existed":true,"value":1}"#).unwrap();
+        assert!(legacy.key_existed);
+        assert_eq!(legacy.kind, REG_DWORD_KIND);
+        assert!(legacy.data.is_empty());
+        assert_eq!(restore_action(&legacy), RestoreAction::Restore);
+        assert!(!may_delete_created_key(&legacy));
+
+        let legacy_absent: BackupValue = serde_json::from_str(r#"{"existed":false}"#).unwrap();
+        assert!(legacy_absent.key_existed);
+        assert_eq!(restore_action(&legacy_absent), RestoreAction::Delete);
+        // 旧备份无法证明键是本次新建，因此不回收键。
+        assert!(!may_delete_created_key(&legacy_absent));
+    }
+
+    /// 新备份：原本不存在的值走删除分支，原本不存在的键才允许回收。
+    #[test]
+    fn newly_created_value_and_key_are_removed() {
+        let created: BackupValue =
+            serde_json::from_str(r#"{"existed":false,"keyExisted":false,"kind":4}"#).unwrap();
+        assert_eq!(restore_action(&created), RestoreAction::Delete);
+        assert!(may_delete_created_key(&created));
+
+        let existing_key: BackupValue =
+            serde_json::from_str(r#"{"existed":false,"keyExisted":true,"kind":4}"#).unwrap();
+        assert_eq!(restore_action(&existing_key), RestoreAction::Delete);
+        assert!(!may_delete_created_key(&existing_key));
+    }
+
+    /// 原本存在的值必须按原类型原字节写回，而不是只写回 u32。
+    #[test]
+    fn existing_value_keeps_type_and_bytes() {
+        let previous = BackupValue {
+            existed: true,
+            key_existed: true,
+            value: 0,
+            kind: 1,
+            data: b"custom".to_vec(),
+        };
+        let text = serde_json::to_string(&previous).unwrap();
+        let parsed: BackupValue = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.kind, 1);
+        assert_eq!(parsed.data, b"custom".to_vec());
+        assert_eq!(restore_action(&parsed), RestoreAction::Restore);
+    }
 }

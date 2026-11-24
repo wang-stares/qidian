@@ -10,7 +10,9 @@ import type {
   DnsStatus,
   HotkeyStatus,
   IconMap,
+  LaunchOptions,
   LaunchResult,
+  LockedProcess,
   MemoryStatus,
   ModuleId,
   ModuleStatus,
@@ -29,6 +31,8 @@ import type {
   StartupScan,
   TerminateReport,
   UninstallReport,
+  UpdateInfo,
+  UpdateProgress,
   WarmIconsResult,
 } from "./types";
 import { cloneSettings, DEFAULT_SETTINGS } from "./defaults";
@@ -37,6 +41,8 @@ const TAURI = "__TAURI_INTERNALS__" in window;
 const MOCK_KEY = "qidian.settings.v1";
 let mockModulePromise: Promise<typeof import("./mock")> | null = null;
 let mockAutostart = localStorage.getItem("qidian.mock.autostart") === "1";
+const mockUpdateListeners = new Set<(progress: UpdateProgress) => void>();
+let mockUpdateInstalled = false;
 
 export const isTauri = TAURI;
 
@@ -227,7 +233,8 @@ const mockBridge = {
     return 0;
   },
 
-  async launch(id: string): Promise<LaunchResult> {
+  async launch(id: string, options?: LaunchOptions): Promise<LaunchResult> {
+    void options;
     const { MOCK_APPS } = await mockModule();
     const app = MOCK_APPS.find((item) => item.id === id);
     if (!app) return { ok: false, error: "应用不存在" };
@@ -238,6 +245,13 @@ const mockBridge = {
     settings.usage[id] = (settings.usage[id] ?? 0) + 1;
     saveMockSettings(settings);
     return { ok: true };
+  },
+
+  async addCustomApp(path: string): Promise<AppEntry | null> {
+    void path;
+    await sleep(120);
+    // 浏览器预览不真正解析快捷方式，直接返回 null 让界面提示「不支持」。
+    return null;
   },
 
   async reveal(id: string): Promise<void> {
@@ -265,6 +279,11 @@ const mockBridge = {
   async cleanupOpen(path: string): Promise<void> {
     void path;
     await sleep(60);
+  },
+
+  async checkPathLocks(paths: string[]): Promise<LockedProcess[]> {
+    void paths;
+    return [];
   },
 
   async cleanupApps(): Promise<CleanupApp[]> {
@@ -539,6 +558,37 @@ const mockBridge = {
   async quitApp(): Promise<void> {
     await sleep(40);
   },
+
+  async checkUpdate(): Promise<UpdateInfo | null> {
+    await sleep(700);
+    if (mockUpdateInstalled) return null;
+    return {
+      version: "9.9.9",
+      currentVersion: __APP_VERSION__,
+      notes:
+        "预览数据：新增更安静的更新流程。\n· 检查更新改为手动触发，默认不联网\n· 下载进度显示百分比并可随时查看\n· 导出诊断包便于反馈问题",
+      date: "2026-11-20",
+    };
+  },
+
+  async installUpdate(): Promise<void> {
+    // 预览模式模拟下载进度，方便检查进度条与按钮禁用状态。
+    const contentLength = 5_200_000;
+    let chunkLength = 0;
+    while (chunkLength < contentLength) {
+      chunkLength = Math.min(contentLength, chunkLength + 520_000);
+      for (const listener of mockUpdateListeners) {
+        listener({ chunkLength, contentLength });
+      }
+      await sleep(120);
+    }
+    mockUpdateInstalled = true;
+  },
+
+  async exportDiagnostics(): Promise<string> {
+    await sleep(520);
+    return "C:\\Users\\Public\\Desktop\\QiDian-Diagnostics-20261124-120000.txt";
+  },
 };
 
 const tauriBridge = {
@@ -575,13 +625,21 @@ const tauriBridge = {
     return tauriInvoke<number>("cleanup_legacy_ai");
   },
 
-  async launch(id: string): Promise<LaunchResult> {
+  async launch(id: string, options?: LaunchOptions): Promise<LaunchResult> {
     try {
-      await tauriInvoke<void>("launch_app", { id });
+      if (options?.admin) {
+        await tauriInvoke<void>("launch_app_as_admin", { id });
+      } else {
+        await tauriInvoke<void>("launch_app", { id });
+      }
       return { ok: true };
     } catch (error) {
       return { ok: false, error: String(error) };
     }
+  },
+
+  addCustomApp(path: string): Promise<AppEntry | null> {
+    return tauriInvoke<AppEntry | null>("add_custom_app", { path });
   },
 
   reveal(id: string): Promise<void> {
@@ -602,6 +660,10 @@ const tauriBridge = {
 
   cleanupOpen(path: string): Promise<void> {
     return tauriInvoke<void>("cleanup_open", { path });
+  },
+
+  checkPathLocks(paths: string[]): Promise<LockedProcess[]> {
+    return tauriInvoke<LockedProcess[]>("check_path_locks", { paths });
   },
 
   cleanupApps(): Promise<CleanupApp[]> {
@@ -783,6 +845,18 @@ const tauriBridge = {
   async quitApp(): Promise<void> {
     await tauriInvoke<void>("quit_app");
   },
+
+  checkUpdate(): Promise<UpdateInfo | null> {
+    return tauriInvoke<UpdateInfo | null>("check_update");
+  },
+
+  installUpdate(): Promise<void> {
+    return tauriInvoke<void>("install_update");
+  },
+
+  exportDiagnostics(): Promise<string> {
+    return tauriInvoke<string>("export_diagnostics");
+  },
 };
 
 export const api = TAURI ? tauriBridge : mockBridge;
@@ -951,4 +1025,30 @@ export async function watchAppLaunch(callback: (id: string) => void): Promise<()
   } catch {
     return () => undefined;
   }
+}
+
+/** 监听更新下载进度；返回取消监听的函数。 */
+export function watchUpdateProgress(callback: (progress: UpdateProgress) => void): () => void {
+  if (!TAURI) {
+    mockUpdateListeners.add(callback);
+    return () => mockUpdateListeners.delete(callback);
+  }
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  void (async () => {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      const stop = await listen<UpdateProgress>("updater://progress", (event) =>
+        callback(event.payload),
+      );
+      if (disposed) stop();
+      else unlisten = stop;
+    } catch {
+      // 事件接口不可用时静默降级，安装本身仍会继续。
+    }
+  })();
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }

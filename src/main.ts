@@ -14,6 +14,7 @@ import {
   watchAppLaunch,
   setMemorySaver,
   windowActive,
+  watchUpdateProgress,
 } from "./api";
 import { escapeHtml, icon } from "./icons";
 import rewardQr from "./assets/reward-qrcode.png";
@@ -56,6 +57,7 @@ import type {
   DnsStatus,
   HotkeyStatus,
   LaunchResult,
+  LockedProcess,
   MemoryLevel,
   MemoryMode,
   MemoryStatus,
@@ -83,6 +85,8 @@ import type {
   WallpaperFit,
   WallpaperId,
   UninstallReport,
+  UpdateInfo,
+  UpdateProgress,
   ViewMode,
 } from "./types";
 import {
@@ -199,6 +203,12 @@ interface UiState {
   cursorIndex: number;
   lastResults: AppEntry[];
   inspectorId: string | null;
+  /** 启动台中当前选中的应用：F1 预览与 Ctrl+K 命令面板共用。 */
+  selectedId: string | null;
+  previewOpen: boolean;
+  commandOpen: boolean;
+  commandIndex: number;
+  commandAppId: string | null;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   customThemeName: string;
@@ -321,6 +331,27 @@ interface UiState {
   bootLoading: boolean;
   bootError: string | null;
   quitPending: boolean;
+  /** 关于页的更新检查、安装进度与诊断导出状态。 */
+  updateChecking: boolean;
+  updateChecked: boolean;
+  updateInfo: UpdateInfo | null;
+  updateInstalling: boolean;
+  /** 下载进度百分比；null 表示尚未收到进度事件。 */
+  updateProgress: number | null;
+  updateError: string | null;
+  diagExporting: boolean;
+  diagPath: string | null;
+  /** 删除/完全清除失败时占用目录的进程，非空时弹确认框。 */
+  lockedPrompt: LockedPrompt | null;
+  lockedBusy: boolean;
+}
+
+/** 占用进程确认框：两条删除路径共用，retry 保留各自的调用参数。 */
+interface LockedPrompt {
+  title: string;
+  description: string;
+  processes: LockedProcess[];
+  retry: () => Promise<void>;
 }
 
 const state: UiState = {
@@ -341,6 +372,11 @@ const state: UiState = {
   cursorIndex: 0,
   lastResults: [],
   inspectorId: null,
+  selectedId: null,
+  previewOpen: false,
+  commandOpen: false,
+  commandIndex: 0,
+  commandAppId: null,
   settingsOpen: false,
   settingsTab: "appearance",
   customThemeName: "",
@@ -452,6 +488,16 @@ const state: UiState = {
   bootLoading: false,
   bootError: null,
   quitPending: false,
+  updateChecking: false,
+  updateChecked: false,
+  updateInfo: null,
+  updateInstalling: false,
+  updateProgress: null,
+  updateError: null,
+  diagExporting: false,
+  diagPath: null,
+  lockedPrompt: null,
+  lockedBusy: false,
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -471,9 +517,12 @@ const SOURCE_LABELS: Record<AppEntry["source"], string> = {
   uwp: "Microsoft Store",
   appsFolder: "开始菜单索引",
   installDir: "安装目录",
+  custom: "手动添加",
 };
 
 const APP_VERSION = __APP_VERSION__;
+/** 手动下载兜底地址；只有点击「检查更新」后才会访问网络。 */
+const RELEASES_URL = "https://github.com/wang-stares/qidian/releases/latest";
 /** 自定义强调色校验；自定义壁纸在设置文件中的字符上限。 */
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const WALLPAPER_MAX_CHARS = 1_200_000;
@@ -551,6 +600,32 @@ const collator = new Intl.Collator("zh-Hans-CN", { numeric: true, sensitivity: "
 const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
 
 const appRoot = document.getElementById("app") as HTMLElement;
+
+/* 交互浮层统一挂在 .app 内：预览面板、命令面板与文件拖入提示都按绝对定位覆盖。 */
+const previewPanel = document.createElement("aside");
+previewPanel.className = "app-preview";
+previewPanel.id = "app-preview";
+previewPanel.hidden = true;
+previewPanel.setAttribute("aria-label", "应用预览");
+appRoot.appendChild(previewPanel);
+
+const commandLayer = document.createElement("div");
+commandLayer.className = "command-layer";
+commandLayer.id = "command-layer";
+commandLayer.hidden = true;
+appRoot.appendChild(commandLayer);
+
+const fileDropLayer = document.createElement("div");
+fileDropLayer.className = "file-drop-layer";
+fileDropLayer.id = "file-drop-layer";
+fileDropLayer.hidden = true;
+fileDropLayer.innerHTML = `<div class="file-drop-card">
+  <span class="file-drop-icon">${icon("plus")}</span>
+  <strong>松开以添加到启点</strong>
+  <span>支持 .exe / .lnk / .url</span>
+</div>`;
+appRoot.appendChild(fileDropLayer);
+
 const els = {
   app: appRoot,
   search: document.getElementById("search-input") as HTMLInputElement,
@@ -584,6 +659,9 @@ const els = {
   toastStack: document.getElementById("toast-stack") as HTMLElement,
   themeQuickLabel: document.getElementById("theme-quick-label") as HTMLElement,
   btnMax: document.getElementById("btn-max") as HTMLButtonElement,
+  preview: previewPanel,
+  commandLayer,
+  fileDropLayer,
 };
 
 const iconCache = new Map<string, string>();
@@ -675,6 +753,8 @@ async function boot(): Promise<void> {
   state.bootFailed = false;
   applyAppearance();
   renderAll();
+  // 更新进度只在用户点击安装后出现；这里常驻监听，安装期间重渲染设置页。
+  watchUpdateProgress(handleUpdateProgress);
   let launchHidden = false;
   try {
     launchHidden = await api.startedHidden().catch(() => false);
@@ -1058,6 +1138,7 @@ function renderQueryChange(): void {
   renderHeader();
   renderQuickbar();
   renderContent();
+  renderPreviewPanel();
   observeIconHosts();
 }
 
@@ -1070,6 +1151,7 @@ function renderAll(): void {
   renderSurface();
   renderScanStatus();
   renderInspector();
+  renderPreviewPanel();
   renderSettings();
   renderWindowControlsState();
   observeIconHosts();
@@ -1173,6 +1255,9 @@ function setWorkspace(id: WorkspaceTab): void {
   state.workspace = id;
   state.resetScroll = true;
   state.inspectorId = null;
+  state.selectedId = null;
+  state.previewOpen = false;
+  closeCommandPalette();
   closeMenu();
   renderAll();
   if (id === "background") loadBackground();
@@ -1296,6 +1381,7 @@ function cycleSort(): void {
   const index = SORT_MODES.indexOf(state.sort);
   state.sort = SORT_MODES[(index + 1) % SORT_MODES.length];
   state.cursorIndex = 0;
+  state.selectedId = null;
   renderAll();
   showToast(`已按${SORT_LABELS[state.sort]}排序`, "info");
 }
@@ -1439,7 +1525,7 @@ function renderHeader(): void {
   els.searchClear.hidden = state.query.length === 0;
   els.statusRight.innerHTML = state.query.trim()
     ? "<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 启动</span>"
-    : "<span><kbd>Ctrl</kbd><kbd>K</kbd> 搜索</span><span><kbd>右键</kbd> 更多</span><span><kbd>Alt</kbd><kbd>1–9</kbd> 常用</span>";
+    : "<span><kbd>Ctrl</kbd><kbd>K</kbd> 命令</span><span><kbd>F1</kbd> 预览</span><span><kbd>右键</kbd> 更多</span>";
 }
 
 function renderQuickbar(): void {
@@ -1769,8 +1855,11 @@ function renderAppTile(app: AppEntry, tokens: string[]): string {
   const categoryName = category?.name ?? "其他";
   const pinned = state.settings.pinned.includes(app.id);
   const isCursor = tokens.length > 0 && state.lastResults[state.cursorIndex]?.id === app.id;
+  const selected = state.selectedId === app.id || isCursor;
   const hostAttr = iconHostAttr(app);
-  return `<div class="app-tile${isCursor ? " is-cursor" : ""}" role="button" tabindex="-1" draggable="true" data-app-id="${escapeHtml(
+  return `<div class="app-tile${isCursor ? " is-cursor" : ""}${
+    selected ? " is-selected" : ""
+  }" role="button" tabindex="-1" draggable="true" data-app-id="${escapeHtml(
     app.id,
   )}" title="${escapeHtml(app.name)}${app.publisher ? ` · ${escapeHtml(app.publisher)}` : ""}">
     ${pinned ? `<span class="tile-pin">${icon("pin")}</span>` : ""}
@@ -1789,8 +1878,11 @@ function renderAppRow(app: AppEntry, tokens: string[]): string {
   const color = categoryColor(effectiveCategory(app), state.settings.categories);
   const pinned = state.settings.pinned.includes(app.id);
   const isCursor = tokens.length > 0 && state.lastResults[state.cursorIndex]?.id === app.id;
+  const selected = state.selectedId === app.id || isCursor;
   const hostAttr = iconHostAttr(app);
-  return `<div class="app-row${isCursor ? " is-cursor" : ""}" role="button" tabindex="-1" draggable="true" data-app-id="${escapeHtml(
+  return `<div class="app-row${isCursor ? " is-cursor" : ""}${
+    selected ? " is-selected" : ""
+  }" role="button" tabindex="-1" draggable="true" data-app-id="${escapeHtml(
     app.id,
   )}">
     <span class="app-icon"${hostAttr}>${renderIconMarkup(app)}</span>
@@ -2136,6 +2228,430 @@ function renderInspector(): void {
     </div>`;
 }
 
+/* ── selection / preview panel (F1) ───────────────────────────── */
+
+/** 当前启动台渲染顺序下的应用列表，供键盘选择与 F1 预览内部切换使用。 */
+function launcherList(): AppEntry[] {
+  const query = state.query.trim();
+  if (query) {
+    return state.lastResults.length > 0 ? state.lastResults : searchResults();
+  }
+  const visible = visibleApps();
+  if (state.activeNav === "recent") return recentApps();
+  if (state.activeNav === "pinned") return pinnedApps();
+  if (state.activeNav !== "all") {
+    return sortApps(visible.filter((app) => effectiveCategory(app) === state.activeNav));
+  }
+  // 与「全部应用」的分组渲染顺序保持一致：按分类顺序展开。
+  const buckets = new Map<string, AppEntry[]>();
+  for (const app of visible) {
+    const id = effectiveCategory(app);
+    const bucket = buckets.get(id);
+    if (bucket) bucket.push(app);
+    else buckets.set(id, [app]);
+  }
+  return state.settings.categories.flatMap((category) => sortApps(buckets.get(category.id) ?? []));
+}
+
+function selectedApp(): AppEntry | undefined {
+  const map = appMap();
+  if (state.selectedId) {
+    const app = map.get(state.selectedId);
+    if (app) return app;
+  }
+  if (state.query.trim()) {
+    return state.lastResults[state.cursorIndex];
+  }
+  return undefined;
+}
+
+function syncSelectionDom(): void {
+  const current = selectedApp();
+  els.contentBody.querySelectorAll<HTMLElement>("[data-app-id]").forEach((node) => {
+    const active = node.dataset.appId === current?.id;
+    node.classList.toggle("is-selected", active);
+    node.classList.toggle("is-cursor", active && state.query.trim().length > 0);
+  });
+}
+
+function moveSelection(delta: number): void {
+  const list = launcherList();
+  if (list.length === 0) return;
+  const current = selectedApp();
+  let index = current ? list.findIndex((app) => app.id === current.id) : -1;
+  index = index < 0 ? 0 : (index + delta + list.length) % list.length;
+  const app = list[index];
+  if (!app) return;
+  state.selectedId = app.id;
+  if (state.query.trim()) {
+    const cursor = state.lastResults.findIndex((item) => item.id === app.id);
+    if (cursor >= 0) state.cursorIndex = cursor;
+  }
+  syncSelectionDom();
+  const node = els.contentBody.querySelector<HTMLElement>(`[data-app-id="${app.id}"]`);
+  node?.scrollIntoView({ block: "nearest" });
+  if (state.previewOpen) renderPreviewPanel();
+}
+
+function togglePreview(): void {
+  if (state.workspace !== "launcher" || state.settingsOpen) return;
+  if (state.previewOpen) {
+    state.previewOpen = false;
+    renderPreviewPanel();
+    return;
+  }
+  const app = selectedApp() ?? launcherList()[0];
+  if (!app) {
+    showToast("先选中一个应用，再按 F1 预览", "info");
+    return;
+  }
+  state.selectedId = app.id;
+  state.previewOpen = true;
+  state.inspectorId = null;
+  renderInspector();
+  renderPreviewPanel();
+  syncSelectionDom();
+}
+
+function renderPreviewPanel(): void {
+  if (!state.previewOpen || state.workspace !== "launcher") {
+    if (state.previewOpen) state.previewOpen = false;
+    els.preview.hidden = true;
+    els.preview.innerHTML = "";
+    return;
+  }
+  const app = selectedApp();
+  if (!app) {
+    state.previewOpen = false;
+    els.preview.hidden = true;
+    els.preview.innerHTML = "";
+    return;
+  }
+  const category = categoryById(effectiveCategory(app));
+  const pinned = state.settings.pinned.includes(app.id);
+  const path = app.installLocation || app.shortcutPath || "";
+  const canReveal = app.source !== "uwp" && path.length > 0;
+  const launches = state.settings.usage?.[app.id] ?? 0;
+  let lastAt: number | null = null;
+  for (const entry of state.settings.recent) {
+    if (entry.id === app.id && (lastAt === null || entry.at > lastAt)) lastAt = entry.at;
+  }
+
+  els.preview.hidden = false;
+  els.preview.innerHTML = `<div class="preview-head">
+      <button class="preview-close" data-preview-action="close" aria-label="关闭预览">${icon("close")}</button>
+      <span class="preview-icon"${iconHostAttr(app)}>${renderIconMarkup(app)}</span>
+      <div class="preview-title">
+        <h2 title="${escapeHtml(app.name)}">${escapeHtml(app.name)}</h2>
+        <p>${escapeHtml(app.publisher ?? "未知发布者")}</p>
+      </div>
+    </div>
+    <div class="preview-body">
+      <div class="preview-facts">
+        <div class="preview-fact"><span>分类</span><strong>${escapeHtml(category?.name ?? "其他")}</strong></div>
+        ${app.version ? `<div class="preview-fact"><span>版本</span><strong>v${escapeHtml(app.version)}</strong></div>` : ""}
+        <div class="preview-fact"><span>最近使用</span><strong>${lastAt === null ? "从未使用" : relativeTime(lastAt)}</strong></div>
+        <div class="preview-fact"><span>启动次数</span><strong>${launches} 次</strong></div>
+      </div>
+      <button class="preview-path" data-preview-action="copy-path"${path ? "" : " disabled"} title="${
+        path ? "点击复制安装路径" : "没有可复制的位置"
+      }">
+        <span class="preview-path-label">安装路径</span>
+        <span class="preview-path-value is-mono">${escapeHtml(path || "未提供")}</span>
+        ${path ? `<span class="preview-path-hint">${icon("doc")}复制</span>` : ""}
+      </button>
+    </div>
+    <div class="preview-actions">
+      <button class="primary-btn" data-preview-action="launch"${app.launchable ? "" : " disabled"}>${icon(
+        "arrow-up-right",
+      )}打开</button>
+      <div class="preview-actions-row">
+        <button class="ghost-btn" data-preview-action="reveal"${canReveal ? "" : " disabled"}>${icon(
+          "folder",
+        )}打开所在文件夹</button>
+        <button class="ghost-btn" data-preview-action="pin">${icon("pin")}${
+          pinned ? "取消固定" : "固定到常用"
+        }</button>
+      </div>
+    </div>`;
+  observeIconHosts();
+}
+
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    // 非安全上下文没有 Clipboard API 时退回临时 textarea。
+    try {
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function handlePreviewAction(target: HTMLElement): void {
+  const actionEl = target.closest<HTMLElement>("[data-preview-action]");
+  if (!actionEl) return;
+  const action = actionEl.dataset.previewAction;
+  const app = selectedApp();
+  if (!app) return;
+  if (action === "close") {
+    state.previewOpen = false;
+    renderPreviewPanel();
+    return;
+  }
+  if (action === "launch") {
+    void launchApp(app);
+    return;
+  }
+  if (action === "reveal") {
+    void api
+      .reveal(app.id)
+      .then(() => showToast("已打开所在文件夹", "success"))
+      .catch((error) => showToast(`无法打开文件位置：${String(error)}`, "error"));
+    return;
+  }
+  if (action === "pin") {
+    togglePinned(app);
+    return;
+  }
+  if (action === "copy-path") {
+    const path = app.installLocation || app.shortcutPath;
+    if (!path) return;
+    void copyText(path).then((ok) =>
+      showToast(ok ? "已复制安装路径" : "复制失败，请手动选择路径", ok ? "success" : "error"),
+    );
+  }
+}
+
+/* ── command palette (Ctrl+K) ─────────────────────────────────── */
+
+type CommandActionId = "launch" | "admin" | "reveal" | "copy" | "pin" | "manage";
+
+interface CommandAction {
+  id: CommandActionId;
+  label: string;
+  glyph: string;
+  disabled?: boolean;
+}
+
+function commandActions(app: AppEntry): CommandAction[] {
+  const path = app.installLocation || app.shortcutPath || "";
+  const pinned = state.settings.pinned.includes(app.id);
+  const canReveal = app.source !== "uwp" && path.length > 0;
+  return [
+    { id: "launch", label: "打开", glyph: "arrow-up-right", disabled: !app.launchable },
+    { id: "admin", label: "以管理员身份运行", glyph: "shield", disabled: !app.launchable },
+    { id: "reveal", label: "打开所在文件夹", glyph: "folder", disabled: !canReveal },
+    { id: "copy", label: "复制应用路径", glyph: "doc", disabled: !path },
+    { id: "pin", label: pinned ? "取消固定" : "固定到常用", glyph: "pin" },
+    { id: "manage", label: "在「应用管理」中查看", glyph: "trash" },
+  ];
+}
+
+function openCommandPalette(): void {
+  if (state.workspace !== "launcher" || state.settingsOpen) return;
+  const app = selectedApp() ?? launcherList()[0];
+  if (!app) {
+    showToast("先选中一个应用，再按 Ctrl + K", "info");
+    return;
+  }
+  const actions = commandActions(app);
+  const firstEnabled = actions.findIndex((action) => !action.disabled);
+  state.selectedId = app.id;
+  state.commandAppId = app.id;
+  state.commandIndex = firstEnabled >= 0 ? firstEnabled : 0;
+  state.commandOpen = true;
+  closeMenu();
+  renderCommandPalette();
+  syncSelectionDom();
+  els.commandLayer.querySelector<HTMLElement>(".command-palette")?.focus({ preventScroll: true });
+}
+
+function renderCommandPalette(): void {
+  if (!state.commandOpen) {
+    els.commandLayer.hidden = true;
+    els.commandLayer.innerHTML = "";
+    return;
+  }
+  const app = state.commandAppId ? appMap().get(state.commandAppId) : undefined;
+  if (!app) {
+    closeCommandPalette();
+    return;
+  }
+  const actions = commandActions(app);
+  state.commandIndex = Math.min(Math.max(0, state.commandIndex), actions.length - 1);
+  els.commandLayer.innerHTML = `<div class="command-palette" role="dialog" aria-label="应用命令" tabindex="-1">
+    <div class="command-head">
+      <span class="command-icon"${iconHostAttr(app)}>${renderIconMarkup(app)}</span>
+      <div class="command-meta">
+        <strong>${escapeHtml(app.name)}</strong>
+        <span>${escapeHtml(app.publisher ?? "未知发布者")}</span>
+      </div>
+      <kbd class="command-esc">Esc</kbd>
+    </div>
+    <div class="command-list">
+      ${actions
+        .map(
+          (action, index) => `<button class="command-item${
+            index === state.commandIndex ? " is-active" : ""
+          }" data-command-action="${action.id}" data-command-index="${index}"${
+            action.disabled ? " disabled" : ""
+          }>${icon(action.glyph)}<span>${escapeHtml(action.label)}</span></button>`,
+        )
+        .join("")}
+    </div>
+    <div class="command-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></div>
+  </div>`;
+  els.commandLayer.hidden = false;
+  observeIconHosts();
+}
+
+function closeCommandPalette(): void {
+  if (!state.commandOpen && els.commandLayer.hidden) return;
+  state.commandOpen = false;
+  state.commandAppId = null;
+  state.commandIndex = 0;
+  els.commandLayer.hidden = true;
+  els.commandLayer.innerHTML = "";
+}
+
+function moveCommandCursor(delta: number): void {
+  const app = state.commandAppId ? appMap().get(state.commandAppId) : undefined;
+  if (!app) return;
+  const actions = commandActions(app);
+  if (actions.length === 0) return;
+  let next = state.commandIndex;
+  for (let step = 0; step < actions.length; step += 1) {
+    next = (next + delta + actions.length) % actions.length;
+    if (!actions[next]?.disabled) break;
+  }
+  state.commandIndex = next;
+  els.commandLayer.querySelectorAll<HTMLElement>(".command-item").forEach((node, index) => {
+    node.classList.toggle("is-active", index === next);
+  });
+}
+
+function executeCommandAction(id: CommandActionId): void {
+  const app = state.commandAppId ? appMap().get(state.commandAppId) : undefined;
+  if (!app) {
+    closeCommandPalette();
+    return;
+  }
+  const action = commandActions(app).find((item) => item.id === id);
+  if (!action || action.disabled) return;
+  closeCommandPalette();
+  if (action.id === "launch") {
+    void launchApp(app);
+    return;
+  }
+  if (action.id === "admin") {
+    void launchAppAsAdmin(app);
+    return;
+  }
+  if (action.id === "reveal") {
+    void api
+      .reveal(app.id)
+      .then(() => showToast("已打开所在文件夹", "success"))
+      .catch((error) => showToast(`无法打开文件位置：${String(error)}`, "error"));
+    return;
+  }
+  if (action.id === "copy") {
+    const path = app.installLocation || app.shortcutPath;
+    if (!path) return;
+    void copyText(path).then((ok) =>
+      showToast(ok ? "已复制应用路径" : "复制失败，请手动选择路径", ok ? "success" : "error"),
+    );
+    return;
+  }
+  if (action.id === "pin") {
+    togglePinned(app);
+    return;
+  }
+  state.cleanupAppQuery = app.name;
+  setWorkspace("cleanup");
+  showToast(`已在「应用管理」中筛选 ${app.name}`, "success");
+}
+
+function recordLaunch(app: AppEntry): void {
+  const recent = [
+    { id: app.id, at: Date.now() },
+    ...state.settings.recent.filter((entry) => entry.id !== app.id),
+  ].slice(0, 20);
+  const usage = { ...(state.settings.usage ?? {}) };
+  usage[app.id] = (usage[app.id] ?? 0) + 1;
+  patchSettings({ recent, usage });
+}
+
+async function launchAppAsAdmin(app: AppEntry): Promise<void> {
+  if (!app.launchable) {
+    showToast(`「${app.name}」没有可用的启动目标`, "error");
+    return;
+  }
+  try {
+    const result: LaunchResult = await api.launch(app.id, { admin: true });
+    if (!result.ok) {
+      showToast(result.error ? `管理员启动失败：${result.error}` : "管理员启动失败", "error");
+      return;
+    }
+    recordLaunch(app);
+    showToast(`已以管理员身份启动 ${app.name}`, "success");
+  } catch (error) {
+    showToast(`管理员启动失败：${String(error)}`, "error");
+  }
+}
+
+/* ── file drag & drop ──────────────────────────────────────────── */
+
+let fileDragDepth = 0;
+
+function isFileDrag(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types;
+  return Boolean(types && Array.from(types).includes("Files"));
+}
+
+function setFileDropVisible(visible: boolean): void {
+  els.fileDropLayer.hidden = !visible;
+}
+
+function handleFileDrop(files: FileList | null): void {
+  const file = files?.[0];
+  if (!file) return;
+  // Tauri 会给 File 注入绝对路径；浏览器预览没有该字段，直接提示。
+  const path = (file as File & { path?: string }).path ?? "";
+  if (!path) {
+    showToast("无法读取文件路径，请在桌面版中拖入 .exe / .lnk / .url", "error");
+    return;
+  }
+  void addCustomApp(path);
+}
+
+async function addCustomApp(path: string): Promise<void> {
+  try {
+    const app = await api.addCustomApp(path);
+    if (!app) {
+      showToast("该文件类型不支持，仅支持 .exe / .lnk / .url", "error");
+      return;
+    }
+    state.apps = [...state.apps.filter((item) => item.id !== app.id), app];
+    state.resetScroll = true;
+    renderAll();
+    showToast(`已添加 ${app.name}`, "success");
+  } catch (error) {
+    showToast(`添加失败：${String(error)}`, "error");
+  }
+}
+
 /* ── plugins ──────────────────────────────────────────────────── */
 
 const MODULE_GLYPH: Record<ModuleId, string> = {
@@ -2431,7 +2947,36 @@ function settingsHtml(): string {
       <div class="modal-foot-left">${icon("shield")}<span>数据仅保存在本机 · 默认不联网 · 无遥测</span></div>
       <div class="modal-foot-right"><span>v${APP_VERSION}</span></div>
     </div>
-  </div>`;
+  </div>${lockedDialogHtml()}`;
+}
+
+function lockedDialogHtml(): string {
+  const prompt = state.lockedPrompt;
+  if (!prompt) return "";
+  const rows = prompt.processes
+    .map(
+      (process) =>
+        `<div class="locked-item"><span>${escapeHtml(
+          process.name || "未知进程",
+        )}</span><span class="locked-pid">PID ${process.pid}</span></div>`,
+    )
+    .join("");
+  return `<div class="locked-dialog-layer">
+      <button class="locked-backdrop" data-settings-action="locked-cancel" aria-label="取消"></button>
+      <div class="locked-dialog" role="alertdialog" aria-modal="true" aria-labelledby="locked-title">
+        <h3 id="locked-title">${escapeHtml(prompt.title)}</h3>
+        <p class="locked-desc">${escapeHtml(prompt.description)}</p>
+        <div class="locked-list">${rows}</div>
+        <div class="locked-actions">
+          <button class="ghost-btn" data-settings-action="locked-cancel"${
+            state.lockedBusy ? " disabled" : ""
+          }>取消</button>
+          <button class="mini-danger" data-settings-action="locked-kill"${
+            state.lockedBusy ? " disabled" : ""
+          }>${state.lockedBusy ? "处理中…" : "结束这些进程后重试"}</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function themeOption(theme: (typeof THEME_OPTIONS)[number]): string {
@@ -5647,6 +6192,19 @@ async function runCleanupDelete(paths: string[]): Promise<void> {
       };
     }
     state.cleanupSelected = new Set<string>();
+    const locked = report.locked ?? [];
+    if (locked.length > 0) {
+      // 仍有进程占用时弹确认框，列出进程并提供「结束后重试」。
+      const remaining = paths.filter((path) => !deleted.has(path));
+      state.lockedPrompt = {
+        title: "仍有进程占用这些文件夹",
+        description:
+          "结束下列进程后会重新执行一次删除。请先确认它们不是正在使用的重要程序。",
+        processes: locked,
+        retry: () => runCleanupDelete(remaining),
+      };
+      return;
+    }
     let summary = `${report.recycled ? "已移入回收站" : "已删除"} ${
       report.deleted.length
     } 个，共 ${formatBytes(report.freedBytes)}`;
@@ -5671,6 +6229,23 @@ async function runCleanupDelete(paths: string[]): Promise<void> {
       );
     }
   } catch (error) {
+    // 全部失败时后端以字符串报错，占用的 locked 不带回；这里补查一次进程，
+    // 仍能给出「结束进程后重试」的确认框；查不到则保持原有错误提示。
+    try {
+      const locked = await api.checkPathLocks(paths);
+      if (locked.length > 0) {
+        state.lockedPrompt = {
+          title: "仍有进程占用这些文件夹",
+          description:
+            "结束下列进程后会重新执行一次删除。请先确认它们不是正在使用的重要程序。",
+          processes: locked,
+          retry: () => runCleanupDelete(paths),
+        };
+        return;
+      }
+    } catch {
+      // 查询占用失败时直接展示原始错误
+    }
     showToast(`删除残留文件夹失败：${String(error)}`, "error");
   } finally {
     state.cleanupBusy = false;
@@ -5683,6 +6258,126 @@ async function openCleanupFolder(path: string): Promise<void> {
     await api.cleanupOpen(path);
   } catch (error) {
     showToast(`无法打开文件夹：${String(error)}`, "error");
+  }
+}
+
+/** 更新下载进度：只在百分比变化时重渲染，避免进度事件过密。 */
+function handleUpdateProgress(progress: UpdateProgress): void {
+  if (!state.updateInstalling) return;
+  const total = progress.contentLength;
+  const percent =
+    total > 0
+      ? Math.min(100, Math.max(0, Math.round((progress.chunkLength / total) * 100)))
+      : null;
+  if (percent === state.updateProgress) return;
+  state.updateProgress = percent;
+  refreshActive();
+}
+
+async function checkForUpdates(): Promise<void> {
+  if (state.updateChecking || state.updateInstalling) return;
+  state.updateChecking = true;
+  state.updateError = null;
+  refreshActive();
+  try {
+    const info = await api.checkUpdate();
+    state.updateChecked = true;
+    state.updateInfo = info;
+    if (!info) showToast("已是最新版本", "info");
+  } catch (error) {
+    state.updateError = String(error);
+    showToast(`检查更新失败：${String(error)}`, "error");
+  } finally {
+    state.updateChecking = false;
+    refreshActive();
+  }
+}
+
+async function startUpdateInstall(): Promise<void> {
+  if (!state.updateInfo || state.updateInstalling) return;
+  state.updateInstalling = true;
+  state.updateProgress = null;
+  state.updateError = null;
+  refreshActive();
+  try {
+    await api.installUpdate();
+    // 桌面端正常路径会直接重启进程，能走到这里说明已安装完成或处于预览模式。
+    state.updateInstalling = false;
+    state.updateProgress = null;
+    state.updateInfo = null;
+    state.updateChecked = true;
+    showToast(
+      isTauri ? "更新已安装，正在重启启点…" : "预览模式：已模拟完成更新安装",
+      "success",
+    );
+  } catch (error) {
+    state.updateInstalling = false;
+    state.updateProgress = null;
+    state.updateError = String(error);
+    showToast(
+      `更新安装失败：${String(error)}；可复制下方手动下载地址安装`,
+      "error",
+    );
+  } finally {
+    refreshActive();
+  }
+}
+
+async function exportDiagnosticsBundle(): Promise<void> {
+  if (state.diagExporting) return;
+  state.diagExporting = true;
+  refreshActive();
+  try {
+    const path = await api.exportDiagnostics();
+    state.diagPath = path;
+    showToast(`诊断包已导出：${path}`, "success", {
+      label: "打开所在文件夹",
+      onClick: () => void openDiagnosticsFolder(path),
+    });
+  } catch (error) {
+    showToast(`导出诊断包失败：${String(error)}`, "error");
+  } finally {
+    state.diagExporting = false;
+    refreshActive();
+  }
+}
+
+/** 复用清理模块的打开目录能力；不在允许范围内时提示用户手动打开。 */
+async function openDiagnosticsFolder(path: string): Promise<void> {
+  const folder = path.replace(/[\\/][^\\/]+$/, "");
+  try {
+    await api.cleanupOpen(folder || path);
+  } catch {
+    showToast(`无法自动打开文件夹，请手动打开：${path}`, "info");
+  }
+}
+
+async function retryLockedProcesses(): Promise<void> {
+  const prompt = state.lockedPrompt;
+  if (!prompt || state.lockedBusy) return;
+  state.lockedBusy = true;
+  refreshActive();
+  try {
+    const targets: ProcessTarget[] = prompt.processes.map((process) => ({
+      pid: process.pid,
+      name: process.name,
+    }));
+    const report = await api.terminateProcesses(targets);
+    if (report.terminated > 0) {
+      showToast(`已结束 ${report.terminated} 个进程，正在重试…`, "info");
+    }
+    if (report.failed.length > 0) {
+      showToast(`部分进程未能结束：${report.failed[0].error}`, "error");
+    }
+    // 关闭对话框后复用各自捕获的调用参数重新执行。
+    const retry = prompt.retry;
+    state.lockedPrompt = null;
+    state.lockedBusy = false;
+    await retry();
+  } catch (error) {
+    state.lockedBusy = false;
+    showToast(`结束进程失败：${String(error)}`, "error");
+    refreshActive();
   }
 }
 
@@ -5702,7 +6397,12 @@ function toggleCleanupFullRemove(): void {
 async function runCleanupUninstall(): Promise<void> {
   const app = state.cleanupApps?.find((item) => item.id === state.cleanupUninstallId);
   if (!app || state.cleanupUninstallBusy) return;
-  const full = state.cleanupUninstallFull;
+  await performCleanupUninstall(app, state.cleanupUninstallFull);
+}
+
+/** 执行一次卸载；占用进程重试时用捕获的 app/full 重走同一条调用。 */
+async function performCleanupUninstall(app: CleanupApp, full: boolean): Promise<void> {
+  if (state.cleanupUninstallBusy) return;
   state.cleanupUninstallBusy = true;
   refreshActive();
   try {
@@ -5711,10 +6411,22 @@ async function runCleanupUninstall(): Promise<void> {
     state.cleanupApps = (state.cleanupApps ?? []).filter((item) => item.id !== app.id);
     state.cleanupUninstallId = null;
     if (report.errors.length > 0) {
-      showToast(
-        `${app.name} 已卸载，但彻底清理未全部完成：${report.errors[0]}`,
-        "error",
-      );
+      const locked = report.locked ?? [];
+      if (locked.length > 0) {
+        state.lockedPrompt = {
+          title: `仍有进程占用 ${app.name} 的安装目录`,
+          description: `结束下列进程后会重新执行一次${
+            full ? "完全清除" : "卸载"
+          }，并保留当前的卸载方式。请先确认它们不是正在使用的重要程序。`,
+          processes: locked,
+          retry: () => performCleanupUninstall(app, full),
+        };
+      } else {
+        showToast(
+          `${app.name} 已卸载，但彻底清理未全部完成：${report.errors[0]}`,
+          "error",
+        );
+      }
     } else if (full) {
       showToast(
         report.removedDirs.length > 0
@@ -6969,6 +7681,66 @@ function releaseCard(release: Release, current: boolean): string {
   </article>`;
 }
 
+function updateActionResult(): string {
+  if (state.updateInstalling) {
+    const percent = state.updateProgress;
+    return `<div class="update-progress" role="status" aria-live="polite">
+        <div class="update-progress-head"><span>正在下载并安装更新…</span><strong>${
+          percent == null ? "准备中" : `${percent}%`
+        }</strong></div>
+        <div class="update-progress-track"><span style="width:${percent ?? 0}%"></span></div>
+        <div class="update-sub">安装完成后启点会自动重启，请勿关闭窗口。</div>
+      </div>`;
+  }
+  if (state.updateInfo) {
+    const info = state.updateInfo;
+    const notes = info.notes.trim();
+    const longNotes = notes.length > 160;
+    return `<div class="update-found">
+        <div class="setting-title">发现新版本 v${escapeHtml(info.version)}</div>
+        <div class="update-sub">当前 v${escapeHtml(info.currentVersion || APP_VERSION)}${
+          info.date ? ` · ${escapeHtml(info.date)}` : ""
+        }</div>
+        ${
+          notes
+            ? `<details class="update-notes"${longNotes ? "" : " open"}><summary>更新说明</summary><div class="update-notes-body">${escapeHtml(
+                notes,
+              )}</div></details>`
+            : ""
+        }
+        ${
+          state.updateError
+            ? `<div class="update-error">${escapeHtml(state.updateError)}</div>`
+            : ""
+        }
+        <div class="update-actions">
+          <button class="primary-btn" data-settings-action="update-install" data-focus-key="update-install">${icon(
+            "arrow-down",
+          )}下载并安装</button>
+        </div>
+        <p class="update-manual">手动下载：<span>${RELEASES_URL}</span><br />可复制到浏览器打开，适用于网络受限或自动更新失败时。</p>
+      </div>`;
+  }
+  return `<div class="update-actions">
+      <button class="ghost-btn" data-settings-action="update-check" data-focus-key="update-check"${
+        state.updateChecking ? " disabled" : ""
+      }>${
+        state.updateChecking ? '<span class="inline-spinner"></span>' : icon("refresh")
+      }${state.updateChecking ? "检查中…" : "检查更新"}</button>
+      ${
+        state.updateChecked
+          ? `<span class="update-sub">已是最新版本（v${escapeHtml(APP_VERSION)}）</span>`
+          : ""
+      }
+    </div>
+    ${
+      state.updateError
+        ? `<div class="update-error">${escapeHtml(state.updateError)}</div>
+          <p class="update-manual">手动下载：<span>${RELEASES_URL}</span></p>`
+        : ""
+    }`;
+}
+
 function updatesPanel(): string {
   const current = RELEASES.find((release) => release.version === APP_VERSION) ?? RELEASES[0];
   const older = current
@@ -6981,9 +7753,10 @@ function updatesPanel(): string {
           <div class="update-version">v${escapeHtml(APP_VERSION)}</div>
           <div class="update-sub">构建于 ${escapeHtml(__APP_BUILD_DATE__)} · Windows x64</div>
         </div>
-        <span class="update-status">${icon("shield")}本地离线更新</span>
+        <span class="update-status">${icon("shield")}默认不联网</span>
       </div>
-      <div class="update-note">${icon("info")}<span>启点不访问网络，也不会自动检查或下载更新。运行新版本安装程序覆盖安装即可；分类、固定与索引会保留。</span></div>
+      <div class="update-note">${icon("info")}<span>启点不会自动检查更新，仅在你点击「检查更新」时联网一次；下载与安装也需要你手动确认。其余时间应用完全离线。</span></div>
+      ${updateActionResult()}
     </div>
     <div class="settings-section">
       <h3 class="settings-section-title">最新更新公告</h3>
@@ -6995,15 +7768,7 @@ function updatesPanel(): string {
             .map((release) => releaseCard(release, false))
             .join("")}</details></div>`
         : ""
-    }
-    <div class="settings-section">
-      <h3 class="settings-section-title">更新方式</h3>
-      <div class="settings-card">
-        <div class="setting-row">
-          <div class="setting-copy"><div class="setting-title">覆盖安装</div><div class="setting-desc">运行新版本安装程序即可，安装器会自动关闭正在运行的启点。便携版直接替换 QiDian.exe。应用数据保存在本机，卸载时默认保留。</div></div>
-        </div>
-      </div>
-    </div>`;
+    }`;
 }
 
 function aboutPanel(): string {
@@ -7033,6 +7798,35 @@ function aboutPanel(): string {
       <div class="setting-copy"><div class="setting-title">技术栈</div><div class="setting-desc">Tauri 2 · Rust · Windows WebView2 · 无前端框架 · 无后台服务</div></div>
     </div>
     ${updatesPanel()}
+    <div class="settings-section">
+      <h3 class="settings-section-title">诊断</h3>
+      <div class="settings-card">
+        <div class="setting-row">
+          <div class="setting-copy"><div class="setting-title">导出诊断包</div><div class="setting-desc">在本机桌面生成脱敏的 txt：版本、系统信息与最近错误摘要。不上传任何内容，可自行检查后再附给开发者。</div></div>
+          <div class="setting-control">
+            <button class="ghost-btn" data-settings-action="diag-export"${
+              state.diagExporting ? " disabled" : ""
+            }>${
+              state.diagExporting ? '<span class="inline-spinner"></span>' : icon("doc")
+            }${state.diagExporting ? "导出中…" : "导出"}</button>
+            ${
+              state.diagPath
+                ? `<button class="ghost-btn" data-settings-action="diag-open">${icon(
+                    "folder",
+                  )}打开所在文件夹</button>`
+                : ""
+            }
+          </div>
+        </div>
+        ${
+          state.diagPath
+            ? `<div class="setting-row"><div class="setting-copy"><div class="setting-desc update-path">${escapeHtml(
+                state.diagPath,
+              )}</div></div></div>`
+            : ""
+        }
+      </div>
+    </div>
     <div class="settings-section">
       <h3 class="settings-section-title">赞赏</h3>
       <div class="settings-card about-reward">
@@ -7101,6 +7895,8 @@ function openSettings(tab?: SettingsTab): void {
   }
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   state.settingsOpen = true;
+  state.previewOpen = false;
+  closeCommandPalette();
   settingsAnimated = false;
   if (tab) state.settingsTab = tab;
   state.editingCategoryId = null;
@@ -7132,6 +7928,8 @@ function closeSettings(): void {
   state.perfPendingClean = null;
   state.quitPending = false;
   state.modulePendingUninstall = null;
+  state.lockedPrompt = null;
+  state.lockedBusy = false;
   renderAll();
   queueSave();
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
@@ -7167,6 +7965,8 @@ async function onModalClick(event: MouseEvent): Promise<void> {
         state.perfPendingClean = null;
         state.quitPending = false;
         state.modulePendingUninstall = null;
+        state.lockedPrompt = null;
+        state.lockedBusy = false;
         refreshActive();
         const body = els.modalLayer.querySelector<HTMLElement>(".modal-body");
         if (body) body.scrollTop = 0;
@@ -7817,6 +8617,32 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       }
       return;
     }
+    case "update-check": {
+      void checkForUpdates();
+      return;
+    }
+    case "update-install": {
+      void startUpdateInstall();
+      return;
+    }
+    case "diag-export": {
+      void exportDiagnosticsBundle();
+      return;
+    }
+    case "diag-open": {
+      if (state.diagPath) void openDiagnosticsFolder(state.diagPath);
+      return;
+    }
+    case "locked-cancel": {
+      state.lockedPrompt = null;
+      state.lockedBusy = false;
+      refreshActive();
+      return;
+    }
+    case "locked-kill": {
+      void retryLockedProcesses();
+      return;
+    }
     case "open-data": {
       try {
         await api.openDataDir();
@@ -8325,6 +9151,9 @@ async function onMenuClick(event: MouseEvent): Promise<void> {
   if (action === "inspect") {
     closeMenu();
     state.inspectorId = app.id;
+    state.selectedId = app.id;
+    state.previewOpen = false;
+    renderPreviewPanel();
     scheduleRender();
     return;
   }
@@ -8394,14 +9223,8 @@ async function launchApp(app: AppEntry, sourceEl?: HTMLElement): Promise<void> {
       void pruneMissingApps(true);
       return;
     }
-    const recent = [
-      { id: app.id, at: Date.now() },
-      ...state.settings.recent.filter((entry) => entry.id !== app.id),
-    ].slice(0, 20);
     // 本地同步累加启动次数，让「常用优先」在下次渲染时立刻反映最新排序。
-    const usage = { ...(state.settings.usage ?? {}) };
-    usage[app.id] = (usage[app.id] ?? 0) + 1;
-    patchSettings({ recent, usage });
+    recordLaunch(app);
     showToast(`已启动 ${app.name}`, "success");
   } catch (error) {
     showToast(`启动失败：${String(error)}`, "error");
@@ -8452,6 +9275,7 @@ function setNav(nav: NavKey): void {
   state.query = "";
   els.search.value = "";
   state.cursorIndex = 0;
+  state.selectedId = null;
   state.resetScroll = true;
   els.searchWrap.classList.remove("has-query");
   els.searchClear.hidden = true;
@@ -8461,6 +9285,7 @@ function setNav(nav: NavKey): void {
 function clearSearch(focus = true): void {
   state.query = "";
   state.cursorIndex = 0;
+  state.selectedId = null;
   els.search.value = "";
   els.searchWrap.classList.remove("has-query");
   els.searchClear.hidden = true;
@@ -8472,6 +9297,7 @@ function clearSearch(focus = true): void {
 function updateSearch(value: string): void {
   state.query = value;
   state.cursorIndex = 0;
+  state.selectedId = null;
   state.resetScroll = true;
   els.searchWrap.classList.toggle("has-query", value.length > 0);
   els.searchClear.hidden = value.length === 0;
@@ -8486,16 +9312,24 @@ function moveSearchCursor(delta: number): void {
   if (results.length === 0) return;
   state.cursorIndex = (state.cursorIndex + delta + results.length) % results.length;
   const current = results[state.cursorIndex];
+  state.selectedId = current?.id ?? null;
   els.contentBody.querySelectorAll<HTMLElement>("[data-app-id]").forEach((node) => {
-    node.classList.toggle("is-cursor", node.dataset.appId === current?.id);
+    const active = node.dataset.appId === current?.id;
+    node.classList.toggle("is-cursor", active);
+    node.classList.toggle("is-selected", active);
   });
   const target = els.contentBody.querySelector<HTMLElement>(`[data-app-id="${current?.id}"]`);
   target?.scrollIntoView({ block: "nearest" });
+  if (state.previewOpen) renderPreviewPanel();
 }
 
 /* ── toasts ───────────────────────────────────────────────────── */
 
-function showToast(message: string, type: "success" | "error" | "info" = "info"): void {
+function showToast(
+  message: string,
+  type: "success" | "error" | "info" = "info",
+  action?: { label: string; onClick: () => void },
+): void {
   while (els.toastStack.childElementCount >= 3) {
     els.toastStack.firstElementChild?.remove();
   }
@@ -8505,11 +9339,24 @@ function showToast(message: string, type: "success" | "error" | "info" = "info")
   toast.innerHTML = `<span class="toast-icon">${icon(
     type === "success" ? "check" : "info",
   )}</span><span class="toast-copy">${escapeHtml(message)}</span>`;
+  if (action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast-action";
+    button.textContent = action.label;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      action.onClick();
+      toast.classList.add("is-leaving");
+      window.setTimeout(() => toast.remove(), 220);
+    });
+    toast.appendChild(button);
+  }
   els.toastStack.appendChild(toast);
   window.setTimeout(() => {
     toast.classList.add("is-leaving");
     window.setTimeout(() => toast.remove(), 220);
-  }, 2800);
+  }, action ? 6500 : 2800);
 }
 
 /* ── events ───────────────────────────────────────────────────── */
@@ -8655,6 +9502,9 @@ els.app.addEventListener("click", (event) => {
     const id = inspect.dataset.inspect;
     if (id) {
       state.inspectorId = id;
+      state.selectedId = id;
+      state.previewOpen = false;
+      renderPreviewPanel();
       renderInspector();
     }
     return;
@@ -8778,6 +9628,29 @@ els.modalLayer.addEventListener("input", onModalInput);
 els.modalLayer.addEventListener("keydown", onModalKeydown);
 els.menuLayer.addEventListener("click", (event) => void onMenuClick(event));
 
+els.preview.addEventListener("click", (event) => {
+  event.stopPropagation();
+  handlePreviewAction(event.target as HTMLElement);
+});
+els.commandLayer.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const target = event.target as HTMLElement;
+  const actionEl = target.closest<HTMLElement>("[data-command-action]");
+  if (actionEl) {
+    executeCommandAction(actionEl.dataset.commandAction as CommandActionId);
+    return;
+  }
+  if (!target.closest(".command-palette")) closeCommandPalette();
+});
+els.contentBody.addEventListener("pointerover", (event) => {
+  const node = (event.target as HTMLElement).closest<HTMLElement>("[data-app-id]");
+  const id = node?.dataset.appId;
+  if (!id || state.selectedId === id) return;
+  state.selectedId = id;
+  syncSelectionDom();
+  if (state.previewOpen) renderPreviewPanel();
+});
+
 window.addEventListener("resize", () => closeMenu());
 els.content.addEventListener("scroll", () => {
   if (state.menu) closeMenu();
@@ -8803,11 +9676,36 @@ window.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement;
   const mod = event.ctrlKey || event.metaKey;
 
+  if (state.commandOpen) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveCommandCursor(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const app = state.commandAppId ? appMap().get(state.commandAppId) : undefined;
+      const action = app ? commandActions(app)[state.commandIndex] : undefined;
+      if (action) executeCommandAction(action.id);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+  }
+
+  if (event.key === "F1") {
+    if (state.workspace !== "launcher" || state.settingsOpen || state.menu || state.commandOpen) return;
+    event.preventDefault();
+    togglePreview();
+    return;
+  }
   if (mod && event.key.toLowerCase() === "k") {
     if (state.settingsOpen || state.workspace !== "launcher") return;
     event.preventDefault();
-    els.search.focus();
-    els.search.select();
+    openCommandPalette();
     return;
   }
   if (mod && event.key.toLowerCase() === "f") {
@@ -8828,6 +9726,11 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
+    if (state.commandOpen) {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
     if (state.menu) {
       event.preventDefault();
       closeMenu();
@@ -8836,6 +9739,12 @@ window.addEventListener("keydown", (event) => {
     if (state.settingsOpen) {
       event.preventDefault();
       closeSettings();
+      return;
+    }
+    if (state.previewOpen) {
+      event.preventDefault();
+      state.previewOpen = false;
+      renderPreviewPanel();
       return;
     }
     if (state.workspace !== "launcher") {
@@ -8856,6 +9765,13 @@ window.addEventListener("keydown", (event) => {
     }
   }
   if (state.settingsOpen || state.menu) return;
+
+  // F1 预览打开时，左右方向键在应用之间移动并同步刷新预览内容。
+  if (state.previewOpen && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    event.preventDefault();
+    moveSelection(event.key === "ArrowRight" ? 1 : -1);
+    return;
+  }
 
   if (event.altKey && /^[1-9]$/.test(event.key)) {
     const index = Number(event.key) - 1;
@@ -8908,6 +9824,7 @@ els.app.addEventListener("dragend", () => {
 });
 
 els.app.addEventListener("dragover", (event) => {
+  if (isFileDrag(event)) return; // 外部文件走全局高亮层，避免与分类拖拽冲突。
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-cat-drop]");
   document.querySelectorAll(".is-drop-target").forEach((node) => {
     if (node !== target) node.classList.remove("is-drop-target");
@@ -8919,6 +9836,7 @@ els.app.addEventListener("dragover", (event) => {
 });
 
 els.app.addEventListener("dragleave", (event) => {
+  if (isFileDrag(event)) return;
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-cat-drop]");
   if (target && !target.contains(event.relatedTarget as Node)) {
     target.classList.remove("is-drop-target");
@@ -8926,6 +9844,7 @@ els.app.addEventListener("dragleave", (event) => {
 });
 
 els.app.addEventListener("drop", (event) => {
+  if (isFileDrag(event)) return; // 交给 window 的 drop 处理器。
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-cat-drop]");
   if (!target) return;
   event.preventDefault();
@@ -8935,6 +9854,35 @@ els.app.addEventListener("drop", (event) => {
   const app = appId ? appMap().get(appId) : undefined;
   if (app && categoryId) setCategory(app, categoryId);
   state.dragId = null;
+});
+
+/* 外部文件拖入：显示整窗高亮，松手后只处理第一个文件。 */
+window.addEventListener("dragenter", (event) => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  fileDragDepth += 1;
+  setFileDropVisible(true);
+});
+
+window.addEventListener("dragover", (event) => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  setFileDropVisible(true);
+});
+
+window.addEventListener("dragleave", (event) => {
+  if (!isFileDrag(event) && fileDragDepth === 0) return;
+  fileDragDepth = Math.max(0, fileDragDepth - 1);
+  if (fileDragDepth === 0) setFileDropVisible(false);
+});
+
+window.addEventListener("drop", (event) => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault();
+  fileDragDepth = 0;
+  setFileDropVisible(false);
+  handleFileDrop(event.dataTransfer?.files ?? null);
 });
 
 /* helpers */

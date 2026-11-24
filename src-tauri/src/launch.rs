@@ -23,6 +23,59 @@ pub fn launch(target: &LaunchTarget) -> Result<(), String> {
     }
 }
 
+/// 以管理员身份启动。Store 应用没有可提权的可执行文件，直接给出说明。
+pub fn launch_as_admin(target: &LaunchTarget) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let (file, args) = match target {
+            LaunchTarget::Executable { path, args, .. } => {
+                (path.clone(), args.clone().unwrap_or_default())
+            }
+            LaunchTarget::Shortcut { path } => (path.clone(), String::new()),
+            LaunchTarget::Uwp { .. } => {
+                return Err("Store 应用不支持以管理员身份运行".to_string())
+            }
+        };
+        if !Path::new(&file).is_file() {
+            return Err(format!("启动目标不存在：{file}"));
+        }
+        shell_execute_as_admin(&file, &args)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        Err("启点目前只支持 Windows".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn shell_execute_as_admin(file: &str, parameters: &str) -> Result<(), String> {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let file = HSTRING::from(file);
+    let parameters = HSTRING::from(parameters);
+    let result = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            w!("runas"),
+            &file,
+            &parameters,
+            &HSTRING::new(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as isize;
+    match code {
+        // 用户在弹出的 UAC 对话框点了「否」，这不是程序错误，单独提示。
+        5 => Err("已取消管理员授权".to_string()),
+        code if code <= 32 => Err(format!("管理员启动失败（错误码 {code}）")),
+        _ => Ok(()),
+    }
+}
+
 pub fn reveal(target: &LaunchTarget) -> Result<(), String> {
     #[cfg(windows)]
     {

@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "userTemp",
+      "name": "用户临时文件",
+      "paths": ["%TEMP%"],
+      "ignoreAge": true
+    },
+    {
+      "id": "windowsTemp",
+      "name": "Windows 临时文件",
+      "paths": ["%WINDIR%\\Temp"],
+      "ignoreAge": true
+    },
+    {
+      "id": "updateCache",
+      "name": "Windows 更新下载缓存",
+      "paths": ["%WINDIR%\\SoftwareDistribution\\Download"],
+      "ignoreAge": true
+    },
+    {
+      "id": "logs",
+      "name": "系统日志文件",
+      "paths": ["%WINDIR%\\Logs"],
+      "suffixes": ["log"],
+      "ignoreAge": false
+    },
+    {
+      "id": "prefetch",
+      "name": "预读取缓存",
+      "paths": ["%WINDIR%\\Prefetch"],
+      "suffixes": ["pf"],
+      "ignoreAge": true
+    },
+    {
+      "id": "d3dCache",
+      "name": "DirectX 着色器缓存",
+      "paths": ["%LOCALAPPDATA%\\D3DSCache"],
+      "ignoreAge": true
+    },
+    {
+      "id": "dxCache",
+      "name": "DXCache 缓存",
+      "paths": ["%LOCALAPPDATA%\\DXCache"],
+      "ignoreAge": true
+    },
+    {
+      "id": "glCache",
+      "name": "OpenGL 着色器缓存",
+      "paths": ["%LOCALAPPDATA%\\GLCache"],
+      "ignoreAge": true
+    },
+    {
+      "id": "inetCache",
+      "name": "IE/兼容性网络缓存",
+      "paths": ["%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache"],
+      "ignoreAge": true
+    },
+    {
+      "id": "transferCache",
+      "name": "更新 P2P 传递缓存",
+      "paths": ["%WINDIR%\\ServiceProfiles\\NetworkService\\AppData\\Local\\Microsoft\\Windows\\DeliveryOptimization\\Cache"],
+      "ignoreAge": true
+    },
+    {
+      "id": "wer",
+      "name": "Windows 错误报告（用户）",
+      "paths": ["%LOCALAPPDATA%\\Microsoft\\Windows\\WER"],
+      "ignoreAge": true
+    },
+    {
+      "id": "werSystem",
+      "name": "Windows 错误报告（系统）",
+      "paths": ["%PROGRAMDATA%\\Microsoft\\Windows\\WER"],
+      "ignoreAge": true
+    },
+    {
+      "id": "crashDumps",
+      "name": "应用崩溃转储",
+      "paths": ["%LOCALAPPDATA%\\CrashDumps"],
+      "ignoreAge": true
+    },
+    {
+      "id": "minidump",
+      "name": "蓝屏小转储",
+      "paths": ["%WINDIR%\\Minidump"],
+      "ignoreAge": true
+    },
+    {
+      "id": "liveKernel",
+      "name": "内核实时转储",
+      "paths": ["%WINDIR%\\LiveKernelReports"],
+      "ignoreAge": true
+    },
+    {
+      "id": "eventLogs",
+      "name": "系统事件日志",
+      "paths": ["%WINDIR%\\System32\\winevt\\Logs"],
+      "suffixes": ["evtx"],
+      "ignoreAge": false
+    },
+    {
+      "id": "thumbnailCache",
+      "name": "缩略图与图标缓存",
+      "paths": ["%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer"],
+      "prefixes": ["thumbcache_", "iconcache_"],
+      "ignoreAge": true
+    },
+    {
+      "id": "systemTemp32",
+      "name": "系统临时目录（32 位）",
+      "paths": ["%WINDIR%\\SystemTemp"],
+      "ignoreAge": true
+    },
+    {
+      "id": "chromeCache",
+      "name": "Chrome 浏览器缓存",
+      "paths": ["%LOCALAPPDATA%\\Google\\Chrome\\User Data\\{Default,Profile 1,Profile 2,Profile 3,Guest Profile}\\{Cache,Code Cache,GPUCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "edgeCache",
+      "name": "Edge 浏览器缓存",
+      "paths": ["%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\{Default,Profile 1,Profile 2,Profile 3,Guest Profile}\\{Cache,Code Cache,GPUCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "braveCache",
+      "name": "Brave 浏览器缓存",
+      "paths": ["%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data\\{Default,Profile 1,Profile 2,Profile 3,Guest Profile}\\{Cache,Code Cache,GPUCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "firefoxCache",
+      "name": "Firefox 浏览器缓存",
+      "paths": ["%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\cache2"],
+      "ignoreAge": true
+    },
+    {
+      "id": "teamsCache",
+      "name": "Teams 应用缓存",
+      "paths": ["%APPDATA%\\Microsoft\\Teams\\{Cache,Code Cache,GPUCache,DawnCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "discordCache",
+      "name": "Discord 应用缓存",
+      "paths": ["%APPDATA%\\discord\\{Cache,Code Cache,GPUCache,DawnCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "slackCache",
+      "name": "Slack 应用缓存",
+      "paths": ["%APPDATA%\\Slack\\{Cache,Code Cache,GPUCache,DawnCache}"],
+      "ignoreAge": true
+    },
+    {
+      "id": "windowsOld",
+      "name": "旧系统目录 Windows.old",
+      "paths": ["%WINDIR%\\..\\Windows.old"],
+      "special": "tree",
+      "ignoreAge": true
+    },
+    {
+      "id": "recycleBin",
+      "name": "回收站",
+      "paths": [],
+      "special": "recycleBin",
+      "ignoreAge": false
+    }
+  ]
+}

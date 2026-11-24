@@ -32,7 +32,8 @@ export type AppSource =
   | "registry"
   | "uwp"
   | "appsFolder"
-  | "installDir";
+  | "installDir"
+  | "custom";
 export type MemoryMode = "auto" | "custom" | "manual";
 export type MemoryLevel = "low" | "normal";
 export type MemoryTrimScope = "self" | "system";
@@ -244,6 +245,11 @@ export interface LaunchResult {
   error?: string;
 }
 
+/** 启动选项：管理员启动走独立的后端命令。 */
+export interface LaunchOptions {
+  admin?: boolean;
+}
+
 export interface IconMap {
   [id: string]: string;
 }
@@ -302,6 +308,12 @@ export interface CleanupScan {
   advancedOk: boolean;
 }
 
+export interface LockedProcess {
+  pid: number;
+  /** 可执行文件名；取不到时为空串。 */
+  name: string;
+}
+
 export interface CleanupDeleteReport {
   freedBytes: number;
   files: number;
@@ -310,6 +322,22 @@ export interface CleanupDeleteReport {
   /** 已安排下次重启后删除的路径。 */
   pendingReboot: string[];
   errors: string[];
+  /** 删除失败时仍占用目标的进程；无失败或取不到时为空数组。 */
+  locked: LockedProcess[];
+}
+
+/** 检查更新返回的版本信息；null 表示已是最新版本。 */
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes: string;
+  date: string;
+}
+
+/** 更新下载进度：contentLength 为总字节数，未知时为 0。 */
+export interface UpdateProgress {
+  chunkLength: number;
+  contentLength: number;
 }
 
 export interface CleanupApp {
@@ -334,6 +362,8 @@ export interface UninstallReport {
   files: number;
   registryRemoved: boolean;
   errors: string[];
+  /** 卸载后仍占用安装目录、导致删除失败的进程；无失败时为空数组。 */
+  locked: LockedProcess[];
 }
 
 export interface HotkeyBindingStatus {

@@ -1,13 +1,24 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "QiDian",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "identifier": "com.qidian.launcher",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/wang-stares/qidian/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJCNUMzMkY3REIxNDA4RDcKUldUWENCVGI5ekpjdTlEOEZ4NU83YWJLRWx6WU1UdkRqYnJDZE5YeUxpUC9yaUlWQ0QvY2JiMU8K",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   },
   "app": {
     "windows": [

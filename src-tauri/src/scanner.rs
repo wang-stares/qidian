@@ -1815,6 +1815,7 @@ fn source_key(source: AppSource) -> &'static str {
         AppSource::Uwp => "uwp",
         AppSource::AppsFolder => "appsfolder",
         AppSource::InstallDir => "installdir",
+        AppSource::Custom => "custom",
     }
 }
 

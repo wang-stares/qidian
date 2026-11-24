@@ -121,6 +121,22 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+/// 用户拖入添加的自定义应用，单独存盘，与扫描缓存分开，避免重扫时丢失。
+pub fn load_custom_apps(paths: &Paths) -> Vec<crate::models::ScannedApp> {
+    let path = paths.base.join("custom-apps.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_custom_apps(
+    paths: &Paths,
+    apps: &[crate::models::ScannedApp],
+) -> Result<(), String> {
+    write_json(&paths.base.join("custom-apps.json"), &apps)
+}
+
 pub fn load_cache(paths: &Paths) -> Result<Option<ScanCache>, String> {
     if !paths.cache.exists() {
         return Ok(None);

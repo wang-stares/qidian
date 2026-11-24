@@ -27,6 +27,15 @@ pub struct CleanupCandidate {
     pub referenced: bool,
 }
 
+/// 正占用某个路径的进程，供删除失败时提示用户先关闭它。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockedProcess {
+    pub pid: u32,
+    /// 可执行文件名；取不到时为空串。
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupScan {
@@ -52,6 +61,9 @@ pub struct CleanupDeleteReport {
     /// 已安排下次重启后删除的路径。
     pub pending_reboot: Vec<String>,
     pub errors: Vec<String>,
+    /// 删除失败时仍占着目标的进程；无失败或取不到时为空。
+    #[serde(default)]
+    pub locked: Vec<LockedProcess>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +93,9 @@ pub struct UninstallReport {
     pub files: u64,
     pub registry_removed: bool,
     pub recycled: bool,
+    /// 删除失败时占用安装目录的进程，供界面提示用户先关掉它们。
+    #[serde(default)]
+    pub locked: Vec<LockedProcess>,
     pub errors: Vec<String>,
 }
 
@@ -559,6 +574,156 @@ fn stats_parallel(paths: &[PathBuf]) -> Vec<(u64, u64)> {
     })
 }
 
+/// 用 Windows Restart Manager 找出正占用这些路径的进程。
+/// 只登记绝对路径；任何一步失败都退化为空列表，检测本身不影响删除。
+#[cfg(windows)]
+pub(crate) fn file_locks(paths: &[PathBuf]) -> Vec<LockedProcess> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows::Win32::System::RestartManager::{
+        RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO,
+        CCH_RM_MAX_APP_NAME, CCH_RM_SESSION_KEY,
+    };
+
+    /// 单次登记的资源数量上限，避免一次传入过多路径拖慢检测。
+    const REGISTER_BATCH: usize = 64;
+
+    let wide: Vec<Vec<u16>> = paths
+        .iter()
+        .filter(|path| path.is_absolute())
+        .map(|path| {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        })
+        .collect();
+    if wide.is_empty() {
+        return Vec::new();
+    }
+
+    unsafe {
+        let mut session = 0u32;
+        // 会话密钥是定长缓冲区，必须提供 CCH_RM_SESSION_KEY + 1 个 u16。
+        let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+        if RmStartSession(&mut session, 0, PWSTR(key.as_mut_ptr())) != ERROR_SUCCESS {
+            return Vec::new();
+        }
+
+        let pointers: Vec<PCWSTR> = wide.iter().map(|path| PCWSTR(path.as_ptr())).collect();
+        let mut registered = true;
+        for chunk in pointers.chunks(REGISTER_BATCH) {
+            if RmRegisterResources(session, Some(chunk), None, None) != ERROR_SUCCESS {
+                registered = false;
+                break;
+            }
+        }
+
+        let mut infos: Vec<RM_PROCESS_INFO> = Vec::new();
+        let mut returned = 0u32;
+        if registered {
+            let mut needed = 0u32;
+            let mut reasons = 0u32;
+            let mut status = RmGetList(session, &mut needed, &mut returned, None, &mut reasons);
+            // 两次调用之间进程数可能变化，ERROR_MORE_DATA 时按最新所需长度重试。
+            for _ in 0..4 {
+                if status != ERROR_MORE_DATA {
+                    break;
+                }
+                returned = needed;
+                infos = vec![RM_PROCESS_INFO::default(); returned as usize];
+                status = RmGetList(
+                    session,
+                    &mut needed,
+                    &mut returned,
+                    Some(infos.as_mut_ptr()),
+                    &mut reasons,
+                );
+            }
+            if status != ERROR_SUCCESS {
+                infos.clear();
+            } else {
+                let count = (returned as usize).min(infos.len());
+                infos.truncate(count);
+            }
+        }
+        let _ = RmEndSession(session);
+
+        collect_locks(
+            infos
+                .iter()
+                .map(|info| {
+                    let pid = info.Process.dwProcessId;
+                    let mut name = process_name(pid);
+                    if name.is_empty() {
+                        // strAppName 是定长数组，必须按 CCH_RM_MAX_APP_NAME 截断。
+                        name = wide_text(&info.strAppName, CCH_RM_MAX_APP_NAME as usize);
+                    }
+                    (pid, name)
+                })
+                .collect(),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn file_locks(_paths: &[PathBuf]) -> Vec<LockedProcess> {
+    Vec::new()
+}
+
+/// 同一进程可能被多个路径重复登记，按 pid 去重并丢弃无效 pid。
+#[cfg(any(windows, test))]
+fn collect_locks(items: Vec<(u32, String)>) -> Vec<LockedProcess> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|(pid, _)| *pid != 0 && seen.insert(*pid))
+        .map(|(pid, name)| LockedProcess { pid, name })
+        .collect()
+}
+
+/// 定长宽字符数组中取以 NUL 结尾的文本，最多读 max 个字符。
+#[cfg(windows)]
+fn wide_text(buffer: &[u16], max: usize) -> String {
+    let end = buffer
+        .iter()
+        .take(max)
+        .position(|ch| *ch == 0)
+        .unwrap_or(max.min(buffer.len()));
+    String::from_utf16_lossy(&buffer[..end])
+}
+
+/// 取进程可执行文件名；权限不足或进程已退出时返回空串，不报错。
+#[cfg(windows)]
+fn process_name(pid: u32) -> String {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        return String::new();
+    };
+    let mut buffer = vec![0u16; 1024];
+    let mut size = buffer.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size)
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    if result.is_err() || size == 0 {
+        return String::new();
+    }
+    let path = std::ffi::OsString::from_wide(&buffer[..size as usize]);
+    PathBuf::from(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 #[cfg(windows)]
 fn delete_windows(paths: Vec<String>, recycle: bool) -> Result<CleanupDeleteReport, String> {
     if paths.is_empty() {
@@ -575,13 +740,16 @@ fn delete_windows(paths: Vec<String>, recycle: bool) -> Result<CleanupDeleteRepo
         recycled: false,
         pending_reboot: Vec::new(),
         errors: Vec::new(),
+        locked: Vec::new(),
     };
     let mut seen = HashSet::new();
+    let mut requested: Vec<PathBuf> = Vec::new();
     for raw in paths {
         if !seen.insert(raw.clone()) {
             continue;
         }
         let path = PathBuf::from(&raw);
+        requested.push(path.clone());
         if let Err(reason) = validate_scope(&path) {
             report.errors.push(format!("{raw}：{reason}"));
             continue;
@@ -643,8 +811,30 @@ fn delete_windows(paths: Vec<String>, recycle: bool) -> Result<CleanupDeleteRepo
             }
         }
     }
+    // 删除失败时顺带定位占用者，前端一次调用即可提示用户关掉哪个进程。
+    if !report.errors.is_empty() {
+        let remaining: Vec<PathBuf> = requested.into_iter().filter(|path| path.exists()).collect();
+        report.locked = file_locks(&remaining);
+    }
     if report.deleted.is_empty() && !report.errors.is_empty() {
-        return Err(report.errors.join("；"));
+        let mut message = report.errors.join("；");
+        if !report.locked.is_empty() {
+            let names = report
+                .locked
+                .iter()
+                .map(|item| {
+                    if item.name.is_empty() {
+                        format!("PID {}", item.pid)
+                    } else {
+                        format!("{}（PID {}）", item.name, item.pid)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            message.push_str("；占用进程：");
+            message.push_str(&names);
+        }
+        return Err(message);
     }
     Ok(report)
 }
@@ -1023,6 +1213,7 @@ fn uninstall_windows(id: &str, remove_leftovers: bool) -> Result<UninstallReport
         files: 0,
         registry_removed: false,
         recycled: false,
+        locked: Vec::new(),
         errors: Vec::new(),
     };
     let success = exit_code
@@ -1083,6 +1274,15 @@ fn uninstall_windows(id: &str, remove_leftovers: bool) -> Result<UninstallReport
         }
     }
     report.registry_removed = delete_entry_key(&entry);
+    // 卸载后仍有目录删不掉时，顺带定位占用进程，界面可直接提示用户结束。
+    if !report.errors.is_empty() {
+        let remaining: Vec<PathBuf> = leftover_dirs(&entry)
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .collect();
+        report.locked = file_locks(&remaining);
+    }
     Ok(report)
 }
 
@@ -1383,4 +1583,36 @@ fn stable_id(path: &Path) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("cleanup-{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Restart Manager 只在 Windows 上可用，无法在 Linux 跑真实会话；
+    /// 这里直接构造重复的 RmGetList 结果，覆盖「同一进程被多个路径重复登记时按 pid 去重」。
+    #[test]
+    fn locked_processes_dedup_by_pid() {
+        let items = vec![
+            (4242u32, "app.exe".to_string()),
+            (4242u32, "app.exe".to_string()),
+            (88u32, "update.exe".to_string()),
+            (0u32, String::new()),
+        ];
+        let locks = collect_locks(items);
+        assert_eq!(locks.len(), 2);
+        assert_eq!(
+            locks,
+            vec![
+                LockedProcess {
+                    pid: 4242,
+                    name: "app.exe".to_string(),
+                },
+                LockedProcess {
+                    pid: 88,
+                    name: "update.exe".to_string(),
+                },
+            ]
+        );
+    }
 }
