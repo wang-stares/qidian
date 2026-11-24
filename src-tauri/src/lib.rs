@@ -103,9 +103,11 @@ async fn prune_missing_apps(app: tauri::AppHandle) -> Result<Vec<AppEntry>, Stri
             alive
         });
         // 应用已不存在时同步清掉它的图标缓存，避免缓存目录越积越大。
+        // 文件名统一按 icons::icon_key 归一化，否则 `custom:` 这类 id 会留下垃圾文件。
         for id in &removed {
-            let _ = std::fs::remove_file(state.paths.icons.join(format!("{id}.png")));
-            let _ = std::fs::remove_file(state.paths.icons.join(format!("{id}.miss")));
+            let key = icons::icon_key(id);
+            let _ = std::fs::remove_file(state.paths.icons.join(format!("{key}.png")));
+            let _ = std::fs::remove_file(state.paths.icons.join(format!("{key}.miss")));
         }
         let mut hotkeys_changed = false;
         if !removed.is_empty() {
@@ -281,6 +283,39 @@ async fn warm_icons(state: State<'_, AppState>) -> Result<icons::WarmOutcome, St
             .collect()
     };
     tauri::async_runtime::spawn_blocking(move || icons::warm_icons(&paths, targets))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 协议图 404 后由前端调用：忽略 `.miss` 标记强制重新提取，结果直接写回缓存。
+/// 重试次数与退避由前端控制，后端不做退避；单次最多处理 60 个 id，
+/// 避免一次调用把提取线程池占满。
+#[tauri::command]
+async fn retry_icons(
+    // AppHandle 由 Tauri 注入，保留参数以便后续按需通知前端。
+    _app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let paths = state.paths.clone();
+    let targets: Vec<(String, LaunchTarget)> = {
+        let apps = state
+            .apps
+            .lock()
+            .map_err(|_| "应用索引不可用".to_string())?;
+        let mut seen = HashSet::new();
+        let mut targets = Vec::new();
+        for id in ids.into_iter().take(60) {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(item) = apps.get(&id) {
+                targets.push((id, item.target.clone()));
+            }
+        }
+        targets
+    };
+    tauri::async_runtime::spawn_blocking(move || icons::retry_icons(&paths, targets))
         .await
         .map_err(|error| error.to_string())
 }
@@ -1735,6 +1770,29 @@ fn sort_apps(apps: &mut [AppEntry]) {
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 }
 
+/// 图标协议路径里的 id 可能被前端按 URL 规则编码过（`custom:xxx` → `custom%3Axxx`）。
+/// 这里只做最小解码：`%XX` 还原成字节，其余原样保留；非法编码返回 None 交给 404。
+fn decode_uri_component(raw: &str) -> Option<String> {
+    if !raw.contains('%') {
+        return Some(raw.to_string());
+    }
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let hex = std::str::from_utf8(hex).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 提权子进程只执行注册表写入后退出，不初始化窗口与托盘。
@@ -1782,19 +1840,21 @@ pub fn run() {
         .register_uri_scheme_protocol("qidian-icon", |ctx, request| {
             let path = request.uri().path();
             let file = path.rsplit('/').next().unwrap_or("");
-            let id = file.strip_suffix(".png").unwrap_or("");
+            // 前端可能对 id 做过 encodeURIComponent，先还原再查索引与缓存。
+            let id = decode_uri_component(file.strip_suffix(".png").unwrap_or(""))
+                .unwrap_or_default();
             // 只服务当前应用索引里的 id；只读已有缓存，不在这里提取图标，
-            // 未预热的应用由前端 onerror 退回原有的 loadIcons 流程。
+            // 未预热的应用由前端 onerror 退回 loadIcons / retry_icons 流程。
             let state = ctx.app_handle().try_state::<AppState>();
             let bytes = state.and_then(|state| {
                 let known = !id.is_empty()
                     && state
                         .apps
                         .lock()
-                        .map(|apps| apps.contains_key(id))
+                        .map(|apps| apps.contains_key(&id))
                         .unwrap_or(false);
                 if known {
-                    icons::cached_icon(&state.paths, id)
+                    icons::cached_icon(&state.paths, &id)
                 } else {
                     None
                 }
@@ -1912,6 +1972,7 @@ pub fn run() {
             scan_apps,
             load_icons,
             warm_icons,
+            retry_icons,
             launch_app,
             launch_app_as_admin,
             add_custom_app,
@@ -1986,3 +2047,32 @@ pub fn run() {
             }
         });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::decode_uri_component;
+
+    #[test]
+    fn decodes_percent_encoded_custom_ids() {
+        // 前端 `encodeURIComponent("custom:abc")` 的结果必须能还原成索引里的 id。
+        assert_eq!(
+            decode_uri_component("custom%3Aabc").as_deref(),
+            Some("custom:abc")
+        );
+        assert_eq!(
+            decode_uri_component("custom%3Aabc").unwrap(),
+            "custom:abc"
+        );
+        // 未编码的 id 原样返回。
+        assert_eq!(decode_uri_component("a1b2c3").as_deref(), Some("a1b2c3"));
+        assert_eq!(decode_uri_component("").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn rejects_broken_percent_encoding() {
+        assert!(decode_uri_component("custom%3").is_none());
+        assert!(decode_uri_component("custom%zz").is_none());
+        assert!(decode_uri_component("custom%FF").is_none());
+    }
+}
+

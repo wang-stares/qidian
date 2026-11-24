@@ -318,10 +318,8 @@ interface UiState {
   /** 已安装应用列表的搜索词与排序。 */
   cleanupAppQuery: string;
   cleanupAppSort: "name" | "size";
-  cleanupUninstallId: string | null;
-  cleanupUninstallFull: boolean;
-  cleanupUninstallBusy: boolean;
-  cleanupLastUninstall: UninstallReport | null;
+  /** 卸载确认面板：应用管理列表与 Ctrl+K 共用同一份流程状态。 */
+  uninstallFlow: UninstallFlow | null;
   modules: ModuleStatus[];
   modulesLoaded: boolean;
   modulesLoading: boolean;
@@ -369,6 +367,19 @@ interface LockedPrompt {
   description: string;
   processes: LockedProcess[];
   retry: () => Promise<void>;
+}
+
+/** 卸载流程阶段：确认 → 调起卸载程序 → 等待结束 →（可选）清理残留 → 结果。 */
+type UninstallStage = "confirm" | "uninstaller" | "waiting" | "cleanup" | "done" | "failed";
+
+interface UninstallFlow {
+  app: CleanupApp;
+  /** 是否在卸载后清理安装目录残留；默认不勾选。 */
+  removeLeftovers: boolean;
+  stage: UninstallStage;
+  report: UninstallReport | null;
+  /** 调用本身抛出的错误；与 report.errors（卸载/清理失败原因）区分。 */
+  error: string | null;
 }
 
 /** 「创建快捷方式」表单的运行时状态。 */
@@ -496,10 +507,7 @@ const state: UiState = {
   cleanupAppsError: null,
   cleanupAppQuery: "",
   cleanupAppSort: "name",
-  cleanupUninstallId: null,
-  cleanupUninstallFull: false,
-  cleanupUninstallBusy: false,
-  cleanupLastUninstall: null,
+  uninstallFlow: null,
   modules: [],
   modulesLoaded: false,
   modulesLoading: false,
@@ -661,6 +669,13 @@ fileDropLayer.innerHTML = `<div class="file-drop-card">
 </div>`;
 appRoot.appendChild(fileDropLayer);
 
+/** 全局卸载面板与占用进程确认框：不依赖设置弹层，启动台 Ctrl+K 也能直接复用。 */
+const overlayLayer = document.createElement("div");
+overlayLayer.className = "overlay-layer";
+overlayLayer.id = "overlay-layer";
+overlayLayer.hidden = true;
+appRoot.appendChild(overlayLayer);
+
 const els = {
   app: appRoot,
   search: document.getElementById("search-input") as HTMLInputElement,
@@ -706,11 +721,14 @@ const iconQueue: string[] = [];
 const MAX_ICON_CACHE = 600;
 /** 协议图标 404 的 id：避免每次重渲染都重复请求，预热推进后清空重试。 */
 const protocolIconMiss = new Set<string>();
+/** 每个 id 主动重试提取的次数上限，避免一张坏图标无限重试。 */
+const iconRetryCount = new Map<string, number>();
 
 /**
  * 协议图标加载失败时退回占位图：资源错误事件不冒泡，用捕获阶段统一处理，
  * 同时把该 id 交给原有分批 loadIcons 兜底（预热未完成的应用仍能出图标）。
- * 这里不打印日志，避免一张缺失图标刷屏。
+ * 兜底仍失败时再显式请求后端强制重新提取（会忽略失败标记），最多两次，
+ * 这样偶发的提取失败不会让图标一直停在占位图。这里不打印日志，避免刷屏。
  */
 function handleProtocolIconError(event: Event): void {
   const target = event.target;
@@ -722,6 +740,21 @@ function handleProtocolIconError(event: Event): void {
   if (!host) return;
   host.innerHTML = placeholderIconMarkup();
   enqueueIcons([id], true);
+  const attempt = iconRetryCount.get(id) ?? 0;
+  if (attempt >= 2) return;
+  iconRetryCount.set(id, attempt + 1);
+  window.setTimeout(
+    () => {
+      void api
+        .retryIcons([id])
+        .then(() => {
+          protocolIconMiss.delete(id);
+          updateIconHosts([id]);
+        })
+        .catch(() => undefined);
+    },
+    attempt === 0 ? 800 : 2500,
+  );
 }
 
 document.addEventListener("error", handleProtocolIconError, true);
@@ -755,6 +788,9 @@ let warmIconsTimer = 0;
 let deferredStartup = false;
 let deferredWallpaper = false;
 let warmPending = false;
+/** 焦点触发的后台重扫：同一时间只允许一个，且不与首次/手动扫描叠加。 */
+let backgroundScan: Promise<void> | null = null;
+const FOCUS_RESCAN_MIN_MS = 60_000;
 let renderRaf = 0;
 let renderScopeAll = true;
 let previousFocus: HTMLElement | null = null;
@@ -899,6 +935,7 @@ async function boot(): Promise<void> {
           scheduleWarmIcons(1200);
         }
         void pruneMissingApps();
+        maybeFocusRescan();
         if (state.workspace === "memory" && !state.settingsOpen) void loadMemoryStatus();
       });
       void watchAppLaunch((id) => {
@@ -1241,6 +1278,7 @@ function renderAll(): void {
   renderInspector();
   renderPreviewPanel();
   renderSettings();
+  renderOverlays();
   renderWindowControlsState();
   observeIconHosts();
 }
@@ -1324,11 +1362,13 @@ function refreshActive(): void {
     // 这里同步重渲染内容区，避免关闭设置后还残留已卸载页面的 DOM。
     renderSurface();
     renderSettings();
+    renderOverlays();
     return;
   }
   renderSurfaceTabs();
   renderHeader();
   renderSurface();
+  renderOverlays();
 }
 
 function setWorkspace(id: WorkspaceTab): void {
@@ -2197,7 +2237,127 @@ function renderContent(): void {
 
 /* ── scan ─────────────────────────────────────────────────────── */
 
+/** 移除已不存在的应用时同步清理图标缓存、常用/最近/隐藏与分类覆盖，避免留下空引用。 */
+function forgetRemovedAppIds(ids: Set<string>): void {
+  if (ids.size === 0) return;
+  ids.forEach((id) => {
+    iconCache.delete(id);
+    iconRequested.delete(id);
+    protocolIconMiss.delete(id);
+  });
+  const pinned = state.settings.pinned.filter((id) => !ids.has(id));
+  const recent = state.settings.recent.filter((entry) => !ids.has(entry.id));
+  const hidden = state.settings.hidden.filter((id) => !ids.has(id));
+  const overrides = { ...state.settings.overrides };
+  let overrideChanged = false;
+  for (const id of Object.keys(overrides)) {
+    if (ids.has(id)) {
+      delete overrides[id];
+      overrideChanged = true;
+    }
+  }
+  const settingsChanged =
+    pinned.length !== state.settings.pinned.length ||
+    recent.length !== state.settings.recent.length ||
+    hidden.length !== state.settings.hidden.length ||
+    overrideChanged;
+  if (settingsChanged) {
+    state.settings = { ...state.settings, pinned, recent, hidden, overrides };
+    queueSave();
+  }
+  if (state.inspectorId && ids.has(state.inspectorId)) state.inspectorId = null;
+  if (state.selectedId && ids.has(state.selectedId)) state.selectedId = null;
+  if (state.commandAppId && ids.has(state.commandAppId)) closeCommandPalette();
+}
+
+/**
+ * 写入一次扫描结果：按 id 做 diff，只有确实变化时才替换列表、清理旧引用并补拉新图标。
+ * 返回新增/移除数量，供 toast 决定是否提示。
+ */
+function applyScanResult(
+  apps: AppEntry[],
+  scannedAt: number,
+): { added: number; removed: number } {
+  const previousIds = new Set(state.apps.map((app) => app.id));
+  const nextIds = new Set(apps.map((app) => app.id));
+  const addedApps = apps.filter((app) => !previousIds.has(app.id));
+  const removedIds = new Set(
+    state.apps.filter((app) => !nextIds.has(app.id)).map((app) => app.id),
+  );
+  state.scannedAt = scannedAt;
+  if (addedApps.length === 0 && removedIds.size === 0) {
+    // 没有增删时也顺手补拉此前协议直读失败的图标，其余情况完全静默。
+    const retryIcons = apps
+      .filter((app) => !app.visual && !iconCache.has(app.id) && protocolIconMiss.has(app.id))
+      .map((app) => app.id);
+    if (retryIcons.length > 0) enqueueIcons(retryIcons, true);
+    return { added: 0, removed: 0 };
+  }
+  state.apps = apps;
+  forgetRemovedAppIds(removedIds);
+  const addedIds = new Set(addedApps.map((app) => app.id));
+  const missingIcons = apps
+    .filter(
+      (app) =>
+        !app.visual &&
+        !iconCache.has(app.id) &&
+        (addedIds.has(app.id) || protocolIconMiss.has(app.id)),
+    )
+    .map((app) => app.id);
+  if (missingIcons.length > 0) enqueueIcons(missingIcons, true);
+  scheduleWarmIcons(1200);
+  return { added: addedApps.length, removed: removedIds.size };
+}
+
+/** 扫描差异的中文摘要；无变化时返回空串，调用方据此保持静默。 */
+function describeScanDiff(diff: { added: number; removed: number }): string {
+  const parts: string[] = [];
+  if (diff.added > 0) parts.push(`发现 ${diff.added} 个新应用`);
+  if (diff.removed > 0) parts.push(`${diff.removed} 个应用已被移除`);
+  return parts.join("，");
+}
+
+/** 后台静默重扫：不显示扫描进度、不清空列表，失败只留一行 warn。 */
+async function backgroundRescan(): Promise<void> {
+  if (backgroundScan || state.scanning) return;
+  const task = (async () => {
+    try {
+      const result = await api.scan(true);
+      const diff = applyScanResult(result.apps, result.scannedAt);
+      const summary = describeScanDiff(diff);
+      if (!summary) return;
+      renderAll();
+      showToast(summary, "info");
+    } catch (error) {
+      console.warn("[启点] 后台重扫失败，将在下次窗口获得焦点时重试", error);
+    }
+  })();
+  backgroundScan = task;
+  try {
+    await task;
+  } finally {
+    if (backgroundScan === task) backgroundScan = null;
+  }
+}
+
+/** 焦点/可见性变化时检查是否需要静默重扫：60 秒节流 + 与首次/手动扫描互斥。 */
+function maybeFocusRescan(): void {
+  if (document.visibilityState === "hidden") return;
+  if (state.loading || state.scanning || state.bootFailed) return;
+  if (backgroundScan) return;
+  if (state.scannedAt !== null && Date.now() - state.scannedAt < FOCUS_RESCAN_MIN_MS) return;
+  void backgroundRescan();
+}
+
+/** 本地增删应用后把扫描时间顺延，避免紧接着的窗口焦点又触发一次无意义重扫。 */
+function markAppsMutated(): void {
+  state.scannedAt = Date.now();
+}
+
 async function runScan(force: boolean, silent = false): Promise<void> {
+  if (state.scanning) return;
+  // 后台重扫进行中时先等它结束，避免两次扫描结果互相覆盖。
+  if (backgroundScan) await backgroundScan;
   if (state.scanning) return;
   state.scanning = true;
   state.scanError = null;
@@ -2215,15 +2375,17 @@ async function runScan(force: boolean, silent = false): Promise<void> {
       state.scanFound = progress.found;
       renderScanStatus();
     });
-    state.apps = result.apps;
-    state.scannedAt = result.scannedAt;
+    const diff = applyScanResult(result.apps, result.scannedAt);
     state.scanPercent = 1;
     state.scanPhase = "done";
     state.scanFound = result.apps.length;
     scheduleWarmIcons(1500);
     if (!silent) {
+      const summary = describeScanDiff(diff);
       showToast(
-        result.cached ? `已载入本地索引 · ${result.apps.length} 个应用` : `扫描完成 · ${result.apps.length} 个应用`,
+        summary
+          ? `扫描完成 · ${summary}（共 ${result.apps.length} 个应用）`
+          : `扫描完成 · ${result.apps.length} 个应用，无变化`,
         "success",
       );
     }
@@ -2559,7 +2721,8 @@ type CommandActionId =
   | "copy"
   | "pin"
   | "manage"
-  | "create";
+  | "create"
+  | "uninstall";
 
 interface CommandAction {
   id: CommandActionId;
@@ -2599,6 +2762,7 @@ function commandActions(app: AppEntry): CommandAction[] {
       hint: shortcutTargetFor(app) ? undefined : "该应用没有可执行文件或快捷方式路径，暂不支持创建快捷方式。",
     },
     { id: "manage", label: "在「应用管理」中查看", glyph: "trash" },
+    { id: "uninstall", label: "卸载此应用", glyph: "trash" },
   ];
 }
 
@@ -2827,6 +2991,10 @@ function executeCommandAction(id: CommandActionId): void {
     togglePinned(app);
     return;
   }
+  if (action.id === "uninstall") {
+    void openUninstallForLauncherApp(app);
+    return;
+  }
   state.cleanupAppQuery = app.name;
   setWorkspace("cleanup");
   showToast(`已在「应用管理」中筛选 ${app.name}`, "success");
@@ -2893,6 +3061,7 @@ async function addCustomApp(path: string): Promise<void> {
       return;
     }
     state.apps = [...state.apps.filter((item) => item.id !== app.id), app];
+    markAppsMutated();
     state.resetScroll = true;
     renderAll();
     showToast(`已添加 ${app.name}`, "success");
@@ -3090,8 +3259,7 @@ async function uninstallModule(id: ModuleId): Promise<void> {
       state.cleanupPendingDelete = false;
       state.cleanupApps = null;
       state.cleanupAppsError = null;
-      state.cleanupUninstallId = null;
-      state.cleanupLastUninstall = null;
+      state.uninstallFlow = null;
     }
     if (id === "boot") {
       state.autoStart = false;
@@ -3196,7 +3364,7 @@ function settingsHtml(): string {
       <div class="modal-foot-left">${icon("shield")}<span>数据仅保存在本机 · 默认不联网 · 无遥测</span></div>
       <div class="modal-foot-right"><span>v${APP_VERSION}</span></div>
     </div>
-  </div>${lockedDialogHtml()}`;
+  </div>`;
 }
 
 function lockedDialogHtml(): string {
@@ -3224,6 +3392,195 @@ function lockedDialogHtml(): string {
             state.lockedBusy ? " disabled" : ""
           }>${state.lockedBusy ? "处理中…" : "结束这些进程后重试"}</button>
         </div>
+      </div>
+    </div>`;
+}
+
+/** 全局覆盖层：卸载确认面板在下，占用进程确认框在上（后渲染者优先）。 */
+function renderOverlays(): void {
+  const html = `${uninstallDialogHtml()}${lockedDialogHtml()}`;
+  overlayLayer.hidden = html.length === 0;
+  overlayLayer.innerHTML = html;
+  if (!overlayLayer.hidden && state.uninstallFlow && !state.lockedPrompt) {
+    // 每次阶段刷新后把焦点留在面板内，避免键盘输入落到底层搜索框。
+    overlayLayer.querySelector<HTMLElement>(".uninstall-dialog")?.focus({ preventScroll: true });
+  } else if (state.lockedPrompt && !state.lockedBusy) {
+    // 确认框优先接管焦点，默认停在“取消”上，避免误触结束进程。
+    overlayLayer
+      .querySelector<HTMLElement>('[data-settings-action="locked-cancel"]')
+      ?.focus({ preventScroll: true });
+  }
+}
+
+function uninstallBusy(): boolean {
+  const stage = state.uninstallFlow?.stage;
+  return stage === "uninstaller" || stage === "waiting" || stage === "cleanup";
+}
+
+/** 官方卸载程序的常见成功码：0 成功，1641/3010 表示成功后需要重启。 */
+function uninstallExitOk(report: UninstallReport): boolean {
+  return report.exitCode === 0 || report.exitCode === 1641 || report.exitCode === 3010;
+}
+
+function uninstallDialogHtml(): string {
+  const flow = state.uninstallFlow;
+  if (!flow) return "";
+  const { app } = flow;
+  const busy = uninstallBusy();
+  const started = flow.stage !== "confirm";
+  const report = flow.report;
+  const exitOk = report ? uninstallExitOk(report) : false;
+  const size = app.sizeBytes > 0 ? formatBytes(app.sizeBytes) : "未知";
+  const location = app.installLocation?.trim() || "未记录安装位置";
+
+  const step1 =
+    !started
+      ? "is-pending"
+      : flow.stage === "uninstaller"
+        ? "is-active"
+        : flow.stage === "failed" && (!report || !exitOk)
+          ? "is-error"
+          : "is-done";
+  const step2 =
+    flow.stage === "waiting"
+      ? "is-active"
+      : flow.stage === "uninstaller"
+        ? "is-pending"
+        : flow.stage === "failed" && (!report || !exitOk)
+          ? "is-error"
+          : started
+            ? "is-done"
+            : "is-pending";
+  const step3 = !flow.removeLeftovers
+    ? "is-skipped"
+    : flow.stage === "cleanup"
+      ? "is-active"
+      : !started || flow.stage === "uninstaller" || flow.stage === "waiting"
+        ? "is-pending"
+        : !exitOk
+          ? "is-skipped"
+          : flow.stage === "failed" || (report?.errors.length ?? 0) > 0
+            ? "is-error"
+            : "is-done";
+  const step4 =
+    flow.stage === "done" ? "is-done" : flow.stage === "failed" ? "is-error" : "is-pending";
+
+  const details = [
+    !started
+      ? "确认后将运行应用自带的卸载程序"
+      : flow.stage === "uninstaller"
+        ? "正在启动并调用卸载程序…"
+        : flow.stage === "failed" && (!report || !exitOk)
+          ? "卸载程序未正常结束"
+          : "已调用系统登记的卸载程序",
+    flow.stage === "uninstaller"
+      ? "卸载程序运行中，请勿关闭启点"
+      : flow.stage === "waiting"
+        ? "等待卸载程序退出…"
+        : started
+          ? "卸载程序已结束"
+          : "等待调用卸载程序",
+    !flow.removeLeftovers
+      ? "未勾选，安装目录会保留"
+      : flow.stage === "cleanup"
+        ? "正在删除安装目录残留…"
+        : report && exitOk
+          ? report.removedDirs.length > 0
+            ? `已清理 ${report.removedDirs.length} 个目录，释放 ${formatBytes(report.freedBytes)}`
+            : "没有可清理的残留目录"
+          : "卸载完成后执行",
+    flow.stage === "confirm"
+      ? "等待开始"
+      : flow.stage === "done"
+        ? "完成"
+        : flow.stage === "failed"
+          ? "卸载未完成"
+          : "处理中…",
+  ];
+  const steps = [
+    { title: "调用官方卸载程序", cls: step1, detail: details[0] },
+    { title: "等待卸载完成", cls: step2, detail: details[1] },
+    { title: "清理安装目录残留", cls: step3, detail: details[2] },
+    { title: "结果摘要", cls: step4, detail: details[3] },
+  ]
+    .map(
+      (step, index) =>
+        `<li class="uninstall-step ${step.cls}"><span class="uninstall-step-dot">${
+          step.cls === "is-done" ? icon("check") : String(index + 1)
+        }</span><div><strong>${step.title}</strong><small>${step.detail}</small></div></li>`,
+    )
+    .join("");
+
+  let result = "";
+  if (flow.stage === "done" || flow.stage === "failed") {
+    const lines: string[] = [];
+    if (flow.error) {
+      lines.push(`调用卸载失败：${flow.error}`);
+    } else if (!report) {
+      lines.push("卸载未返回结果");
+    } else if (exitOk) {
+      const cleaned = flow.removeLeftovers
+        ? report.removedDirs.length > 0
+          ? `已清理 ${report.removedDirs.length} 个残留目录，释放 ${formatBytes(report.freedBytes)}`
+          : "未发现可清理的残留目录"
+        : "安装目录已保留";
+      lines.push(`已卸载 ${app.name}，${cleaned}。`);
+      if (report.errors.length > 0) lines.push(`部分残留未能清理：${report.errors[0]}`);
+      if (report.timedOut) lines.push("卸载程序超时，可能仍在前台运行。");
+    } else {
+      lines.push(`卸载 ${app.name} 未完成：${report.errors[0] ?? "卸载程序未正常结束"}`);
+    }
+    const ok = flow.stage === "done";
+    result = `<div class="uninstall-result ${ok ? "is-success" : "is-error"}">${icon(
+      ok ? "check" : "info",
+    )}<div>${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</div></div>`;
+  }
+
+  const actions = busy
+    ? `<span class="uninstall-hint">卸载程序运行中，请稍候；结束后会立即显示结果。</span>
+       <button class="ghost-btn" data-uninstall-action="cancel" disabled>取消</button>`
+    : flow.stage === "confirm"
+      ? `<span class="uninstall-hint">将调用系统登记的卸载程序${
+          flow.removeLeftovers ? "，随后清理安装目录" : ""
+        }。</span>
+         <button class="ghost-btn" data-uninstall-action="cancel">取消</button>
+         <button class="mini-danger uninstall-confirm" data-uninstall-action="start">卸载</button>`
+      : flow.stage === "done"
+        ? `<button class="ghost-btn" data-uninstall-action="cancel">完成</button>`
+        : `<span class="uninstall-hint">${
+            report?.locked.length ? "结束占用进程后将自动重试。" : "可关闭面板稍后再试。"
+          }</span>
+           <button class="ghost-btn" data-uninstall-action="cancel">关闭</button>
+           <button class="mini-danger" data-uninstall-action="start">重试</button>`;
+
+  return `<div class="uninstall-layer">
+      <button class="uninstall-backdrop" data-uninstall-action="cancel" aria-label="取消卸载"></button>
+      <div class="uninstall-dialog" role="dialog" aria-modal="true" aria-labelledby="uninstall-title" tabindex="-1">
+        <div class="uninstall-head">
+          <div>
+            <h3 id="uninstall-title">卸载 ${escapeHtml(app.name)}</h3>
+            <p>先运行应用自带的卸载程序，再按需清理安装目录残留。</p>
+          </div>
+          <button class="uninstall-close" data-uninstall-action="cancel" aria-label="关闭"${
+            busy ? " disabled" : ""
+          }>${icon("close")}</button>
+        </div>
+        <div class="uninstall-facts">
+          <div><span>应用名</span><strong>${escapeHtml(app.name)}</strong></div>
+          <div><span>安装位置</span><code title="${escapeHtml(location)}">${escapeHtml(
+            location,
+          )}</code></div>
+          <div><span>占用大小</span><strong>${size}</strong></div>
+        </div>
+        <button class="cleanup-choice${flow.removeLeftovers ? " is-on" : ""}" role="checkbox" aria-checked="${
+          flow.removeLeftovers
+        }" data-uninstall-action="toggle-leftovers"${flow.stage === "confirm" ? "" : " disabled"}>
+          <span class="cleanup-choice-box">${icon("check")}</span>
+          <span><strong>同时清理安装目录残留</strong><small>卸载完成后删除安装目录中剩余的文件</small></span>
+        </button>
+        <ol class="uninstall-steps">${steps}</ol>
+        ${result}
+        <div class="uninstall-actions">${actions}</div>
       </div>
     </div>`;
 }
@@ -6063,18 +6420,17 @@ async function loadCleanupApps(): Promise<void> {
 }
 
 function cleanupAppRow(app: CleanupApp): string {
-  const open = app.uninstallable && state.cleanupUninstallId === app.id;
   const meta = [app.publisher, app.version ? `v${app.version}` : null, app.scope]
     .filter(Boolean)
     .join(" · ");
   const action = app.uninstallable
     ? `<button class="ghost-btn" data-settings-action="cleanup-uninstall-open" data-id="${escapeHtml(
         app.id,
-      )}"${state.cleanupUninstallBusy ? " disabled" : ""}>${open ? "收起" : "卸载"}</button>`
+      )}">卸载</button>`
     : `<button class="ghost-btn" data-settings-action="cleanup-open" data-path="${escapeHtml(
         app.installLocation ?? "",
-      )}"${!app.installLocation || state.cleanupUninstallBusy ? " disabled" : ""}>打开目录</button>`;
-  return `<div class="cleanup-app-row${open ? " is-open" : ""}">
+      )}"${!app.installLocation ? " disabled" : ""}>打开目录</button>`;
+  return `<div class="cleanup-app-row">
     <span class="cleanup-app-glyph">${icon("box")}</span>
     <div class="cleanup-copy">
       <div class="cleanup-name">${escapeHtml(app.name)}${
@@ -6089,40 +6445,7 @@ function cleanupAppRow(app: CleanupApp): string {
     </div>
     <div class="cleanup-size">${app.sizeBytes > 0 ? formatBytes(app.sizeBytes) : "—"}</div>
     ${action}
-  </div>${
-    open
-      ? `<div class="cleanup-uninstall">
-          <button class="cleanup-choice${state.cleanupUninstallFull ? " is-on" : ""}" role="checkbox" aria-checked="${
-            state.cleanupUninstallFull
-          }" data-settings-action="cleanup-uninstall-full"${
-            state.cleanupUninstallBusy ? " disabled" : ""
-          }>
-            <span class="cleanup-choice-box">${icon("check")}</span>
-            <span><strong>完全清除</strong><small>卸载完成后删除安装文件夹${
-              app.installLocation ? `（${escapeHtml(app.installLocation)}）` : ""
-            }，并移除残留的卸载注册表项</small></span>
-          </button>
-          <p class="cleanup-warn">${
-            state.cleanupUninstallFull
-              ? "会先调用应用自带卸载程序，成功后再删除安装文件夹；删除不可恢复。"
-              : "仅运行应用自带卸载程序，安装文件夹会保留，可稍后在下方残留列表中处理。"
-          }</p>
-          <div class="cleanup-actions">
-            <span>${
-              state.cleanupUninstallBusy
-                ? "卸载程序运行中，请勿关闭启点；完成后会自动刷新列表。"
-                : `将卸载 ${escapeHtml(app.name)}`
-            }</span>
-            <button class="ghost-btn" data-settings-action="cleanup-uninstall-cancel"${
-              state.cleanupUninstallBusy ? " disabled" : ""
-            }>取消</button>
-            <button class="mini-danger" data-settings-action="cleanup-uninstall-confirm"${
-              state.cleanupUninstallBusy ? " disabled" : ""
-            }>${state.cleanupUninstallBusy ? "卸载中…" : state.cleanupUninstallFull ? "卸载并彻底删除" : "仅卸载"}</button>
-          </div>
-        </div>`
-      : ""
-  }`;
+  </div>`;
 }
 
 /** 已安装应用按搜索词与排序过滤，供列表与计数共用。 */
@@ -6160,23 +6483,7 @@ function refreshCleanupAppList(): void {
 
 function cleanupAppsSection(): string {
   const apps = state.cleanupApps;
-  const last = state.cleanupLastUninstall;
   const visible = filteredCleanupApps();
-  const lastParts = last
-    ? [
-        last.removedDirs.length > 0
-          ? `删除 ${last.removedDirs.length} 个文件夹，释放 ${formatBytes(last.freedBytes)}`
-          : last.registryRemoved
-            ? "未找到可删除的安装目录"
-            : "",
-        last.registryRemoved ? "卸载注册表项已移除" : "",
-      ].filter(Boolean)
-    : [];
-  const lastNote = last
-    ? `<div class="cleanup-result" role="status">${icon("check")}<span>${escapeHtml(last.appName)} 已卸载${
-        lastParts.length > 0 ? `，${lastParts.join("，")}` : ""
-      }${last.errors.length > 0 ? `；${last.errors.length} 项未能清理。` : "。"}</span></div>`
-    : "";
   const body = state.cleanupAppsLoading && !apps
     ? perfState("正在读取本机已安装应用……")
     : state.cleanupAppsError
@@ -6207,16 +6514,15 @@ function cleanupAppsSection(): string {
   return `<div class="settings-section">
     <div class="perf-head">
       <div>
-        <h3 class="settings-section-title">已安装应用</h3>
-        <p class="background-lead">注册表应用可调用自带卸载程序并选择完全清除；启动台识别的便携版/未登记应用会一并列出，可直接打开安装目录。</p>
+        <h3 class="settings-section-title">已安装应用 · 卸载</h3>
+        <p class="background-lead">每个应用的主要操作是「卸载」：先运行应用自带的卸载程序，可在确认面板中勾选「同时清理安装目录残留」。便携版/未登记应用会一并列出，可直接打开安装目录。</p>
       </div>
       <button class="ghost-btn" data-settings-action="cleanup-apps-refresh" data-focus-key="cleanup-apps-refresh"${
         state.cleanupAppsLoading ? " disabled" : ""
       }>${icon("refresh")}${state.cleanupAppsLoading ? "读取中…" : "刷新列表"}</button>
     </div>
-    ${lastNote}
     ${body}
-    <div class="background-note">${icon("info")}<span>只列出注册表中带卸载命令的应用；绿色版、便携版与部分 Store 应用没有卸载登记，可在下方“应用文件夹与空间清理”中按目录查看。完全清除只删除 Program Files、Program Files (x86)、ProgramData 与 LocalAppData\\Programs 下的安装目录，且会再次核对其它应用、快捷方式与运行中进程的引用。</span></div>
+    <div class="background-note">${icon("info")}<span>只列出注册表中带卸载命令的应用；绿色版、便携版与部分 Store 应用没有卸载登记，可在下方“查找已卸载应用的残留”中按目录查看。残留清理只删除 Program Files、Program Files (x86)、ProgramData 与 LocalAppData\\Programs 下的安装目录，且会再次核对其它应用、快捷方式与运行中进程的引用。</span></div>
   </div>`;
 }
 
@@ -6537,8 +6843,8 @@ function cleanupPanel(): string {
   return `${cleanupAppsSection()}${cleanupBrokenSection()}<div class="settings-section">
     <div class="perf-head">
       <div>
-        <h3 class="settings-section-title">应用文件夹与空间清理</h3>
-        <p class="background-lead">列出安装目录与应用数据文件夹；被应用引用的目录只读，未被引用的标记为疑似残留。删除会按下方选项移入回收站或永久生效。</p>
+        <h3 class="settings-section-title">查找已卸载应用的残留</h3>
+        <p class="background-lead">独立于上面的卸载流程：扫描安装目录与应用数据文件夹，列出应用卸载后遗留的目录。被应用引用的目录只读，未引用的标记为疑似残留；删除会按下方选项移入回收站或永久生效。</p>
       </div>
       <button class="ghost-btn" data-settings-action="cleanup-refresh" data-focus-key="cleanup-refresh"${
         state.cleanupLoading ? " disabled" : ""
@@ -6807,80 +7113,255 @@ async function retryLockedProcesses(): Promise<void> {
   }
 }
 
-function openCleanupUninstall(id: string): void {
-  if (state.cleanupUninstallBusy) return;
-  state.cleanupUninstallId = state.cleanupUninstallId === id ? null : id;
-  state.cleanupUninstallFull = false;
-  refreshActive();
+/** 打开统一的卸载确认面板（应用管理列表与 Ctrl+K 共用）。 */
+function openUninstallDialog(app: CleanupApp): void {
+  if (uninstallBusy()) return;
+  state.uninstallFlow = {
+    app,
+    removeLeftovers: false,
+    stage: "confirm",
+    report: null,
+    error: null,
+  };
+  renderOverlays();
 }
 
-function toggleCleanupFullRemove(): void {
-  if (state.cleanupUninstallBusy) return;
-  state.cleanupUninstallFull = !state.cleanupUninstallFull;
-  refreshActive();
+function openUninstallDialogById(id: string): void {
+  const app = state.cleanupApps?.find((item) => item.id === id);
+  if (!app || !app.uninstallable) return;
+  openUninstallDialog(app);
 }
 
-async function runCleanupUninstall(): Promise<void> {
-  const app = state.cleanupApps?.find((item) => item.id === state.cleanupUninstallId);
-  if (!app || state.cleanupUninstallBusy) return;
-  await performCleanupUninstall(app, state.cleanupUninstallFull);
-}
-
-/** 执行一次卸载；占用进程重试时用捕获的 app/full 重走同一条调用。 */
-async function performCleanupUninstall(app: CleanupApp, full: boolean): Promise<void> {
-  if (state.cleanupUninstallBusy) return;
-  state.cleanupUninstallBusy = true;
-  refreshActive();
-  try {
-    const report = await api.cleanupUninstall(app.id, full);
-    state.cleanupLastUninstall = report;
-    state.cleanupApps = (state.cleanupApps ?? []).filter((item) => item.id !== app.id);
-    state.cleanupUninstallId = null;
-    if (report.errors.length > 0) {
-      const locked = report.locked ?? [];
-      if (locked.length > 0) {
-        state.lockedPrompt = {
-          title: `仍有进程占用 ${app.name} 的安装目录`,
-          description: `结束下列进程后会重新执行一次${
-            full ? "完全清除" : "卸载"
-          }，并保留当前的卸载方式。请先确认它们不是正在使用的重要程序。`,
-          processes: locked,
-          retry: () => performCleanupUninstall(app, full),
-        };
-      } else {
-        showToast(
-          `${app.name} 已卸载，但彻底清理未全部完成：${report.errors[0]}`,
-          "error",
-        );
-      }
-    } else if (full) {
-      showToast(
-        report.removedDirs.length > 0
-          ? `已卸载 ${app.name}，删除 ${report.removedDirs.length} 个文件夹，释放 ${formatBytes(
-              report.freedBytes,
-            )}`
-          : `已卸载 ${app.name}，未找到可删除的安装目录，可在残留列表中检查`,
-        "success",
-      );
-    } else {
-      showToast(`已卸载 ${app.name}`, "success");
+/** Ctrl+K 入口：按安装目录/名称把启动台应用映射到卸载登记，再进入同一确认面板。 */
+async function openUninstallForLauncherApp(app: AppEntry): Promise<void> {
+  if (!moduleReady("cleanup")) {
+    showToast("应用管理插件未安装，暂不能卸载", "info");
+    return;
+  }
+  if (!state.cleanupApps) {
+    state.cleanupAppsLoading = true;
+    try {
+      state.cleanupApps = await api.cleanupApps();
+      state.cleanupAppsError = null;
+    } catch (error) {
+      state.cleanupAppsError = String(error);
+    } finally {
+      state.cleanupAppsLoading = false;
     }
-    if (report.removedDirs.length > 0 && state.cleanupScan) {
-      const removed = new Set(report.removedDirs);
-      state.cleanupScan = {
-        ...state.cleanupScan,
-        candidates: state.cleanupScan.candidates.filter(
-          (candidate) => !removed.has(candidate.path),
-        ),
+  }
+  const match = (state.cleanupApps ?? []).find(
+    (item) => item.uninstallable && cleanupAppMatchesEntry(app, item),
+  );
+  if (!match) {
+    showToast(`未找到 ${app.name} 的卸载登记，可在「应用管理」中查看`, "info");
+    refreshActive();
+    return;
+  }
+  openUninstallDialog(match);
+}
+
+function toggleUninstallLeftovers(): void {
+  const flow = state.uninstallFlow;
+  if (!flow || flow.stage !== "confirm") return;
+  flow.removeLeftovers = !flow.removeLeftovers;
+  renderOverlays();
+}
+
+function closeUninstallDialog(): void {
+  if (uninstallBusy()) return;
+  state.uninstallFlow = null;
+  renderOverlays();
+}
+
+function handleUninstallAction(action: string | undefined): void {
+  if (action === "cancel") closeUninstallDialog();
+  else if (action === "toggle-leftovers") toggleUninstallLeftovers();
+  else if (action === "start") void runUninstallFlow();
+}
+
+/** 安装目录相等（忽略大小写与尾部分隔符）或名称一致时，视为同一个应用。 */
+function cleanupAppMatchesEntry(entry: AppEntry, app: CleanupApp): boolean {
+  const normalizePath = (value?: string | null) =>
+    (value ?? "").replace(/[\\/]+$/, "").toLowerCase();
+  const entryPath = normalizePath(entry.installLocation);
+  const appPath = normalizePath(app.installLocation);
+  if (
+    entryPath &&
+    appPath &&
+    (entryPath === appPath ||
+      entryPath.startsWith(`${appPath}\\`) ||
+      appPath.startsWith(`${entryPath}\\`))
+  ) {
+    return true;
+  }
+  return entry.name.trim().toLowerCase() === app.name.trim().toLowerCase();
+}
+
+/** 卸载成功后立刻从启动台列表移除，并清理相关缓存与空引用。 */
+function removeUninstalledApp(app: CleanupApp): boolean {
+  const removedIds = new Set(
+    state.apps.filter((entry) => cleanupAppMatchesEntry(entry, app)).map((entry) => entry.id),
+  );
+  markAppsMutated();
+  if (removedIds.size === 0) return false;
+  state.apps = state.apps.filter((entry) => !removedIds.has(entry.id));
+  forgetRemovedAppIds(removedIds);
+  return true;
+}
+
+/** 卸载流程：确认 → 调起卸载程序 → 等待结束 →（可选）清理残留 → 结果摘要。 */
+async function runUninstallFlow(): Promise<void> {
+  const flow = state.uninstallFlow;
+  if (!flow || uninstallBusy()) return;
+  if (flow.stage !== "confirm" && flow.stage !== "failed") return;
+  const app = flow.app;
+  const removeLeftovers = flow.removeLeftovers;
+  flow.stage = "uninstaller";
+  flow.report = null;
+  flow.error = null;
+  renderOverlays();
+
+  // 后端一次性完成“卸载 + 残留清理”，这里用短暂延时把两个阶段分别呈现出来。
+  const waitTimer = window.setTimeout(() => {
+    if (state.uninstallFlow === flow && flow.stage === "uninstaller") {
+      flow.stage = "waiting";
+      renderOverlays();
+    }
+  }, 800);
+
+  let removed = false;
+  try {
+    const report = await api.cleanupUninstall(app.id, removeLeftovers);
+    window.clearTimeout(waitTimer);
+    if (state.uninstallFlow !== flow) return;
+    if (removeLeftovers) {
+      flow.stage = "cleanup";
+      renderOverlays();
+    }
+    flow.report = report;
+    const exitOk = uninstallExitOk(report);
+    flow.stage = exitOk && report.errors.length === 0 ? "done" : "failed";
+    if (exitOk) {
+      removed = removeUninstalledApp(app);
+      state.cleanupApps = (state.cleanupApps ?? []).filter((item) => item.id !== app.id);
+      if (report.removedDirs.length > 0 && state.cleanupScan) {
+        const removedDirs = new Set(report.removedDirs);
+        state.cleanupScan = {
+          ...state.cleanupScan,
+          candidates: state.cleanupScan.candidates.filter(
+            (candidate) => !removedDirs.has(candidate.path),
+          ),
+        };
+      }
+      const cleaned =
+        removeLeftovers && report.removedDirs.length > 0
+          ? `，清理 ${report.removedDirs.length} 个残留目录（${formatBytes(report.freedBytes)}）`
+          : "";
+      showToast(
+        report.errors.length > 0
+          ? `已卸载 ${app.name}，但残留清理未完成`
+          : `已卸载 ${app.name}${cleaned}`,
+        report.errors.length > 0 ? "error" : "success",
+      );
+      void pruneMissingApps(true);
+    } else {
+      showToast(
+        `卸载 ${app.name} 失败：${report.errors[0] ?? "卸载程序未正常结束"}`,
+        "error",
+      );
+    }
+    if (report.errors.length > 0 && report.locked.length > 0) {
+      state.lockedPrompt = {
+        title: `仍有进程占用 ${app.name} 的安装目录`,
+        description: `已卸载 ${app.name}，但残留目录仍被下列进程占用。结束它们后会继续清理，不会再次运行卸载程序。请先确认它们不是正在使用的重要程序。`,
+        processes: report.locked,
+        retry: () => retryUninstallFlow(),
       };
     }
-    void pruneMissingApps(true);
   } catch (error) {
+    window.clearTimeout(waitTimer);
+    if (state.uninstallFlow !== flow) return;
+    flow.error = String(error);
+    flow.stage = "failed";
     showToast(`卸载失败：${String(error)}`, "error");
   } finally {
-    state.cleanupUninstallBusy = false;
-    // 卸载结果条位于面板顶部，回到顶部才能看到释放量与失败原因。
-    state.resetScroll = true;
+    window.clearTimeout(waitTimer);
+    if (removed) renderAll();
+    else refreshActive();
+  }
+}
+
+/** 锁占用确认框结束进程后的重试：已卸载则只补删残留，否则重走卸载。 */
+async function retryUninstallFlow(): Promise<void> {
+  const flow = state.uninstallFlow;
+  if (!flow || uninstallBusy()) return;
+  const report = flow.report;
+  if (
+    report &&
+    uninstallExitOk(report) &&
+    report.registryRemoved &&
+    flow.removeLeftovers &&
+    flow.app.installLocation
+  ) {
+    await continueLeftoverCleanup(flow);
+    return;
+  }
+  await runUninstallFlow();
+}
+
+/** 卸载程序已成功但残留目录被占用时，仅重试删除安装目录。 */
+async function continueLeftoverCleanup(flow: UninstallFlow): Promise<void> {
+  const directory = flow.app.installLocation;
+  if (!directory) return;
+  flow.stage = "cleanup";
+  flow.error = null;
+  renderOverlays();
+  try {
+    const result = await api.cleanupDelete([directory], false);
+    if (state.uninstallFlow !== flow) return;
+    const previous = flow.report;
+    flow.report = {
+      appName: previous?.appName ?? flow.app.name,
+      exitCode: previous?.exitCode ?? 0,
+      timedOut: previous?.timedOut ?? false,
+      removedDirs: [
+        ...(previous?.removedDirs ?? []),
+        ...result.deleted,
+        ...result.pendingReboot,
+      ],
+      freedBytes: (previous?.freedBytes ?? 0) + result.freedBytes,
+      files: (previous?.files ?? 0) + result.files,
+      registryRemoved: true,
+      errors: result.errors,
+      locked: result.locked,
+    };
+    flow.stage = result.errors.length > 0 ? "failed" : "done";
+    if (result.errors.length > 0) {
+      showToast(`残留清理未完成：${result.errors[0]}`, "error");
+      if (result.locked.length > 0) {
+        state.lockedPrompt = {
+          title: `仍有进程占用 ${flow.app.name} 的安装目录`,
+          description: "结束下列进程后会继续清理残留目录。请先确认它们不是正在使用的重要程序。",
+          processes: result.locked,
+          retry: () => retryUninstallFlow(),
+        };
+      }
+    } else {
+      showToast(
+        result.freedBytes > 0
+          ? `已清理 ${flow.app.name} 的残留，释放 ${formatBytes(result.freedBytes)}`
+          : `已清理 ${flow.app.name} 的残留`,
+        "success",
+      );
+    }
+  } catch (error) {
+    if (state.uninstallFlow === flow) {
+      flow.error = String(error);
+      flow.stage = "failed";
+      showToast(`残留清理失败：${String(error)}`, "error");
+    }
+  } finally {
+    renderOverlays();
     refreshActive();
   }
 }
@@ -8561,21 +9042,9 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       return;
     case "cleanup-uninstall-open": {
       const id = actionEl.dataset.id;
-      if (id) openCleanupUninstall(id);
+      if (id) openUninstallDialogById(id);
       return;
     }
-    case "cleanup-uninstall-full":
-      toggleCleanupFullRemove();
-      return;
-    case "cleanup-uninstall-cancel":
-      if (!state.cleanupUninstallBusy) {
-        state.cleanupUninstallId = null;
-        refreshActive();
-      }
-      return;
-    case "cleanup-uninstall-confirm":
-      void runCleanupUninstall();
-      return;
     case "cleanup-refresh":
       void loadCleanupScan();
       return;
@@ -10229,6 +10698,16 @@ els.app.addEventListener("contextmenu", (event) => {
 });
 
 els.modalLayer.addEventListener("click", (event) => void onModalClick(event));
+// 全局卸载面板：自己的动作走卸载流程；占用进程确认框复用设置弹层的处理分支。
+overlayLayer.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  const uninstallEl = target.closest<HTMLElement>("[data-uninstall-action]");
+  if (uninstallEl) {
+    handleUninstallAction(uninstallEl.dataset.uninstallAction);
+    return;
+  }
+  if (target.closest("[data-settings-action]")) void onModalClick(event);
+});
 els.modalLayer.addEventListener("change", (event) => {
   const target = event.target as HTMLElement;
   const fileInput = target.closest<HTMLInputElement>("[data-wallpaper-file]");
@@ -10344,11 +10823,24 @@ els.contentBody.addEventListener("pointerover", (event) => {
 });
 
 window.addEventListener("resize", () => closeMenu());
+// 浏览器预览与 Tauri 都会派发这两个事件；互斥由 backgroundScan 保证，不会重复扫描。
+window.addEventListener("focus", maybeFocusRescan);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) maybeFocusRescan();
+});
 els.content.addEventListener("scroll", () => {
   if (state.menu) closeMenu();
 });
 
 window.addEventListener("keydown", (event) => {
+  // 卸载面板打开时屏蔽底层快捷键；占用进程确认框优先处理自己的按钮。
+  if (state.uninstallFlow) {
+    if (event.key === "Escape" && !state.lockedPrompt) {
+      event.preventDefault();
+      closeUninstallDialog();
+    }
+    return;
+  }
   if (state.hotkeyCapture) {
     event.preventDefault();
     event.stopPropagation();

@@ -233,6 +233,10 @@ const mockBridge = {
     return {};
   },
 
+  async retryIcons(ids: string[]): Promise<void> {
+    void ids;
+  },
+
   iconUrl(_id: string): string | null {
     // 浏览器预览没有本地图标缓存，继续使用演示数据。
     return null;
@@ -660,6 +664,11 @@ const tauriBridge = {
 
   loadIcons(ids: string[]): Promise<IconMap> {
     return tauriInvoke<IconMap>("load_icons", { ids });
+  },
+
+  /// 忽略失败标记强制重新提取图标，供协议图 404 后的有限次重试使用。
+  retryIcons(ids: string[]): Promise<void> {
+    return tauriInvoke<void>("retry_icons", { ids });
   },
 
   /// 图标的协议地址：由后端按 id 直读磁盘缓存，不必再经 IPC 传 base64。

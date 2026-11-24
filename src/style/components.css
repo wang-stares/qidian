@@ -6357,6 +6357,320 @@ mark {
   color: var(--accent);
 }
 
+/* ── uninstall dialog ────────────────────────────────────────── */
+
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 68;
+}
+
+.overlay-layer[hidden] {
+  display: none;
+}
+
+.uninstall-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 68;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.uninstall-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(8, 10, 14, 0.42);
+  backdrop-filter: blur(2px);
+  cursor: default;
+  animation: fade-in var(--motion-med) var(--ease-std);
+}
+
+.uninstall-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(480px, calc(100% - 16px));
+  max-height: min(86vh, 720px);
+  overflow: auto;
+  padding: 18px 20px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--dialog-radius);
+  background: var(--dialog-bg);
+  box-shadow: var(--shadow-dialog);
+  outline: none;
+  animation: modal-in var(--motion-med) var(--ease-out);
+}
+
+.uninstall-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.uninstall-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.uninstall-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.uninstall-head p {
+  margin: 5px 0 0;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.uninstall-close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.uninstall-close:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.uninstall-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.uninstall-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+.uninstall-facts {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--divider);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.uninstall-facts > div {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.uninstall-facts span {
+  color: var(--text-3);
+  font-size: 9.5px;
+}
+
+.uninstall-facts strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uninstall-facts code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uninstall-dialog .cleanup-choice {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.cleanup-choice:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.uninstall-steps {
+  display: grid;
+  gap: 2px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.uninstall-step {
+  display: flex;
+  gap: 10px;
+  padding: 7px 2px;
+}
+
+.uninstall-step-dot {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--stroke);
+  border-radius: 50%;
+  color: var(--text-3);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.uninstall-step-dot svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
+}
+
+.uninstall-step strong {
+  display: block;
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.uninstall-step small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.uninstall-step.is-active .uninstall-step-dot {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.uninstall-step.is-active strong {
+  color: var(--text);
+}
+
+.uninstall-step.is-done .uninstall-step-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.uninstall-step.is-error .uninstall-step-dot {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.uninstall-step.is-error strong {
+  color: var(--danger);
+}
+
+.uninstall-step.is-skipped {
+  opacity: 0.55;
+}
+
+.uninstall-step.is-skipped .uninstall-step-dot {
+  border-style: dashed;
+}
+
+.uninstall-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--stroke);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.uninstall-result svg {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+}
+
+.uninstall-result p {
+  margin: 0;
+}
+
+.uninstall-result p + p {
+  margin-top: 3px;
+}
+
+.uninstall-result.is-success {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.uninstall-result.is-success svg {
+  color: var(--accent);
+}
+
+.uninstall-result.is-error {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--text);
+}
+
+.uninstall-result.is-error svg {
+  color: var(--danger);
+}
+
+.uninstall-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.uninstall-hint {
+  flex: 1;
+  color: var(--text-3);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.uninstall-actions .mini-danger {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 10.5px;
+}
+
+.uninstall-confirm {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.uninstall-confirm:hover {
+  filter: brightness(0.94);
+}
+
 /* ── performance score ────────────────────────────────────────── */
 
 .perf-score {
