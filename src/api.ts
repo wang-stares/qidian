@@ -1,9 +1,11 @@
 import type {
   AppEntry,
   Bootstrap,
+  BrokenShortcut,
   CleanupApp,
   CleanupDeleteReport,
   CleanupScan,
+  CreateShortcutSpec,
   CustomTheme,
   DiagReport,
   DiskUsageScan,
@@ -78,6 +80,10 @@ function normalizeSettings(raw: unknown): Settings {
       typeof incoming.hotkeyToggle === "string" && incoming.hotkeyToggle.trim()
         ? incoming.hotkeyToggle
         : DEFAULT_SETTINGS.hotkeyToggle,
+    doubleCtrlEnabled:
+      typeof incoming.doubleCtrlEnabled === "boolean"
+        ? incoming.doubleCtrlEnabled
+        : DEFAULT_SETTINGS.doubleCtrlEnabled,
     closeToTray:
       typeof incoming.closeToTray === "boolean"
         ? incoming.closeToTray
@@ -534,16 +540,48 @@ const mockBridge = {
 
   async hotkeyStatus(): Promise<HotkeyStatus> {
     const settings = await loadMockSettings();
-    return {
-      toggle: settings.hotkeyToggle,
-      toggleOk: true,
-      bindings: Object.entries(settings.appHotkeys).map(([appId, accelerator]) => ({
-        appId,
-        accelerator,
-        ok: true,
-      })),
-      errors: [],
-    };
+    const { mockHotkeyStatus } = await mockModule();
+    return mockHotkeyStatus(settings);
+  },
+
+  async hotkeyRestoreDefaults(): Promise<void> {
+    const settings = await loadMockSettings();
+    settings.hotkeyToggle = DEFAULT_SETTINGS.hotkeyToggle;
+    settings.appHotkeys = {};
+    saveMockSettings(settings);
+    await sleep(180);
+  },
+
+  async setDoubleCtrl(enabled: boolean): Promise<void> {
+    const settings = await loadMockSettings();
+    settings.doubleCtrlEnabled = enabled;
+    saveMockSettings(settings);
+    await sleep(120);
+  },
+
+  async scanBrokenShortcuts(): Promise<BrokenShortcut[]> {
+    // 与桌面端一致：只读扫描约 1 秒。
+    await sleep(1000);
+    const { mockScanBrokenShortcuts } = await mockModule();
+    return mockScanBrokenShortcuts();
+  },
+
+  async relocateShortcut(path: string, newTarget: string): Promise<void> {
+    await sleep(220);
+    const { mockRelocateShortcut } = await mockModule();
+    mockRelocateShortcut(path, newTarget);
+  },
+
+  async deleteShortcuts(paths: string[]): Promise<number> {
+    await sleep(260);
+    const { mockDeleteShortcuts } = await mockModule();
+    return mockDeleteShortcuts(paths);
+  },
+
+  async createShortcut(spec: CreateShortcutSpec): Promise<string> {
+    await sleep(240);
+    const { mockCreateShortcut } = await mockModule();
+    return mockCreateShortcut(spec);
   },
 
   async startedHidden(): Promise<boolean> {
@@ -832,6 +870,30 @@ const tauriBridge = {
 
   hotkeyStatus(): Promise<HotkeyStatus> {
     return tauriInvoke<HotkeyStatus>("hotkey_status");
+  },
+
+  hotkeyRestoreDefaults(): Promise<void> {
+    return tauriInvoke<void>("hotkey_restore_defaults");
+  },
+
+  setDoubleCtrl(enabled: boolean): Promise<void> {
+    return tauriInvoke<void>("set_double_ctrl", { enabled });
+  },
+
+  scanBrokenShortcuts(): Promise<BrokenShortcut[]> {
+    return tauriInvoke<BrokenShortcut[]>("scan_broken_shortcuts");
+  },
+
+  relocateShortcut(path: string, newTarget: string): Promise<void> {
+    return tauriInvoke<void>("relocate_shortcut", { path, newTarget });
+  },
+
+  deleteShortcuts(paths: string[]): Promise<number> {
+    return tauriInvoke<number>("delete_shortcuts", { paths });
+  },
+
+  createShortcut(spec: CreateShortcutSpec): Promise<string> {
+    return tauriInvoke<string>("create_shortcut", { spec });
   },
 
   startedHidden(): Promise<boolean> {

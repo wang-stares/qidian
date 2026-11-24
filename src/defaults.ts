@@ -161,6 +161,7 @@ export const DEFAULT_SETTINGS: Settings = {
   memorySkipApps: [],
   hotkeyToggle: "Ctrl+Alt+Q",
   appHotkeys: {},
+  doubleCtrlEnabled: false,
   closeToTray: true,
   trayQuickApps: true,
   cleanupRecycleBin: true,

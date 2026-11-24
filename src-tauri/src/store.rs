@@ -405,7 +405,7 @@ pub fn sanitize_settings(settings: &mut Settings) {
     settings.memory_interval_sec = snap(settings.memory_interval_sec, &[15, 30, 60, 120, 300], 60);
     settings.hotkey_toggle = settings.hotkey_toggle.trim().to_string();
     if settings.hotkey_toggle.is_empty() || settings.hotkey_toggle.chars().count() > 64 {
-        settings.hotkey_toggle = "Ctrl+Alt+Q".to_string();
+        settings.hotkey_toggle = crate::models::DEFAULT_HOTKEY_TOGGLE.to_string();
     }
     settings.app_hotkeys.retain(|id, accelerator| {
         !id.trim().is_empty()

@@ -2,8 +2,10 @@ mod autostart;
 mod cleanup;
 mod diagnostics;
 mod force_delete;
+mod hotkeys;
 mod icons;
 mod launch;
+mod lnk;
 mod memory;
 mod models;
 mod modules;
@@ -47,7 +49,6 @@ static MEMORY_WATCHER: AtomicBool = AtomicBool::new(false);
 static HOTKEY_TOGGLE: Mutex<Option<String>> = Mutex::new(None);
 /// 应用快捷键：规范化字符串 → 应用 id。
 static HOTKEY_APPS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
-static HOTKEY_REPORT: Mutex<Option<HotkeyStatus>> = Mutex::new(None);
 
 struct AppState {
     paths: store::Paths,
@@ -461,6 +462,13 @@ fn save_settings(
     {
         apply_hotkeys(&app, &settings);
     }
+    if previous.double_ctrl_enabled != settings.double_ctrl_enabled {
+        if settings.double_ctrl_enabled {
+            hotkeys::install(&app)?;
+        } else {
+            hotkeys::uninstall();
+        }
+    }
     refresh_tray_menu(&app);
     if MEMORY_ACTIVE.load(Ordering::SeqCst) {
         memory::apply_policy(&app, &settings, "设置变更");
@@ -482,6 +490,8 @@ fn reset_settings(
         .lock()
         .map_err(|_| "设置状态不可用".to_string())? = settings.clone();
     apply_hotkeys(&app, &settings);
+    // 默认关闭双击 Ctrl，恢复默认时同步卸载钩子。
+    hotkeys::uninstall();
     refresh_tray_menu(&app);
     if MEMORY_ACTIVE.load(Ordering::SeqCst) {
         memory::apply_policy(&app, &settings, "恢复默认");
@@ -1027,17 +1037,53 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn hotkey_status() -> HotkeyStatus {
-    HOTKEY_REPORT
-        .lock()
-        .ok()
-        .and_then(|report| report.clone())
-        .unwrap_or_else(|| HotkeyStatus {
-            toggle: String::new(),
-            toggle_ok: false,
-            bindings: Vec::new(),
-            errors: Vec::new(),
-        })
+fn hotkey_status() -> Vec<hotkeys::HotkeyStatus> {
+    hotkeys::status()
+}
+
+/// 把显示/隐藏与应用快捷键恢复为默认值，并立即重新注册。
+#[tauri::command]
+fn hotkey_restore_defaults(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut settings = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态不可用".to_string())?;
+        settings.hotkey_toggle = models::DEFAULT_HOTKEY_TOGGLE.to_string();
+        settings.app_hotkeys.clear();
+        settings.clone()
+    };
+    store::save_settings(&state.paths, &snapshot)?;
+    apply_hotkeys(&app, &snapshot);
+    refresh_tray_menu(&app);
+    Ok(())
+}
+
+/// 开/关「双击 Ctrl 唤出窗口」钩子，并把开关写回设置。
+#[tauri::command]
+fn set_double_ctrl(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        hotkeys::install(&app)?;
+    } else {
+        hotkeys::uninstall();
+    }
+    let snapshot = {
+        let mut settings = state
+            .settings
+            .lock()
+            .map_err(|_| "设置状态不可用".to_string())?;
+        settings.double_ctrl_enabled = enabled;
+        settings.clone()
+    };
+    store::save_settings(&state.paths, &snapshot)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1294,23 +1340,6 @@ fn module_base(app: &tauri::AppHandle) -> std::path::PathBuf {
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HotkeyBindingStatus {
-    app_id: String,
-    accelerator: String,
-    ok: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HotkeyStatus {
-    toggle: String,
-    toggle_ok: bool,
-    bindings: Vec<HotkeyBindingStatus>,
-    errors: Vec<String>,
-}
-
 /// 全局快捷键必须带 Ctrl / Alt / Win，或使用 F1–F24；
 /// 拒绝 Shift+字母这类会拦截日常输入的组合。
 fn shortcut_is_safe(accelerator: &str, shortcut: &Shortcut) -> bool {
@@ -1328,16 +1357,38 @@ fn shortcut_is_safe(accelerator: &str, shortcut: &Shortcut) -> bool {
         && !upper[1..].is_empty()
 }
 
+/// 注册单个快捷键；失败时尽量区分「被其他程序占用」与原始错误。
+fn register_hotkey<R: tauri::Runtime>(
+    shortcuts: &tauri_plugin_global_shortcut::GlobalShortcut<R>,
+    shortcut: Shortcut,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    if hotkeys::hotkey_occupied(&shortcut) {
+        return Err("已被其他程序占用".to_string());
+    }
+    match shortcuts.register(shortcut) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let message = error.to_string();
+            // 插件把 Win32 的 1409 包装成 AlreadyRegistered，这里兜底识别。
+            if message.to_ascii_lowercase().contains("already registered") {
+                Err("已被其他程序占用".to_string())
+            } else {
+                Err(message)
+            }
+        }
+    }
+}
+
 /// 重新注册显示快捷键与所有应用快捷键。先全部注销，避免设置变更后残留旧组合。
-fn apply_hotkeys(app: &tauri::AppHandle, settings: &Settings) -> HotkeyStatus {
-    let mut report = HotkeyStatus {
-        toggle: settings.hotkey_toggle.clone(),
-        toggle_ok: false,
-        bindings: Vec::new(),
-        errors: Vec::new(),
-    };
+/// 每次注册的结果都会记录到 hotkeys 模块，供前端展示。
+fn apply_hotkeys(
+    app: &tauri::AppHandle,
+    settings: &Settings,
+) -> Vec<hotkeys::HotkeyStatus> {
     let shortcuts = app.global_shortcut();
     let _ = shortcuts.unregister_all();
+    let mut statuses: Vec<hotkeys::HotkeyStatus> = Vec::new();
 
     if !modules::is_installed(&module_base(app), "boot") {
         HOTKEY_OK.store(false, Ordering::SeqCst);
@@ -1347,35 +1398,50 @@ fn apply_hotkeys(app: &tauri::AppHandle, settings: &Settings) -> HotkeyStatus {
         if let Ok(mut map) = HOTKEY_APPS.lock() {
             *map = None;
         }
-        if let Ok(mut slot) = HOTKEY_REPORT.lock() {
-            *slot = Some(report.clone());
+        statuses.push(hotkeys::HotkeyStatus {
+            id: "toggle".to_string(),
+            accelerator: settings.hotkey_toggle.clone(),
+            ok: false,
+            reason: Some("启动插件未安装".to_string()),
+        });
+        let mut bindings = settings.app_hotkeys.iter().collect::<Vec<_>>();
+        bindings.sort_by(|a, b| a.0.cmp(b.0));
+        for (app_id, accelerator) in bindings {
+            statuses.push(hotkeys::HotkeyStatus {
+                id: format!("app:{app_id}"),
+                accelerator: accelerator.clone(),
+                ok: false,
+                reason: Some("启动插件未安装".to_string()),
+            });
         }
-        return report;
+        hotkeys::set_status(statuses.clone());
+        return statuses;
     }
 
     let mut registered_toggle: Option<String> = None;
+    let mut toggle_status = hotkeys::HotkeyStatus {
+        id: "toggle".to_string(),
+        accelerator: settings.hotkey_toggle.clone(),
+        ok: false,
+        reason: None,
+    };
     match settings.hotkey_toggle.parse::<Shortcut>() {
         Ok(shortcut) if !shortcut_is_safe(&settings.hotkey_toggle, &shortcut) => {
-            report.errors.push(format!(
-                "显示/隐藏快捷键 {} 需要 Ctrl / Alt / Win，或使用 F1–F24",
-                settings.hotkey_toggle
-            ));
+            toggle_status.reason = Some("需要 Ctrl / Alt / Win，或使用 F1–F24".to_string());
         }
-        Ok(shortcut) => match shortcuts.register(shortcut) {
+        Ok(shortcut) => match register_hotkey(&shortcuts, shortcut) {
             Ok(()) => {
-                report.toggle_ok = true;
+                toggle_status.ok = true;
                 registered_toggle = Some(shortcut.to_string());
             }
-            Err(_) => report.errors.push(format!(
-                "显示/隐藏快捷键 {} 被其它程序占用",
-                settings.hotkey_toggle
-            )),
+            Err(reason) => toggle_status.reason = Some(reason),
         },
-        Err(_) => report.errors.push(format!(
-            "无法识别显示/隐藏快捷键 {}",
-            settings.hotkey_toggle
-        )),
+        Err(error) => {
+            toggle_status.reason = Some(format!("无法识别快捷键: {error}"));
+        }
     }
+    let toggle_ok = toggle_status.ok;
+    statuses.push(toggle_status);
 
     let app_ids: HashSet<String> = app
         .try_state::<AppState>()
@@ -1395,88 +1461,55 @@ fn apply_hotkeys(app: &tauri::AppHandle, settings: &Settings) -> HotkeyStatus {
 
     let mut registered: HashMap<String, String> = HashMap::new();
     for (app_id, accelerator) in bindings {
+        let mut status = hotkeys::HotkeyStatus {
+            id: format!("app:{app_id}"),
+            accelerator: accelerator.clone(),
+            ok: false,
+            reason: None,
+        };
         if !app_ids.contains(app_id) {
-            report.bindings.push(HotkeyBindingStatus {
-                app_id: app_id.clone(),
-                accelerator: accelerator.clone(),
-                ok: false,
-            });
-            report.errors.push(format!(
-                "{} 的快捷键 {accelerator} 未生效：应用已不在列表中",
-                app_id
-            ));
+            status.reason = Some("应用已不在列表中".to_string());
+            statuses.push(status);
             continue;
         }
         let parsed = match accelerator.parse::<Shortcut>() {
             Ok(shortcut) => shortcut,
-            Err(_) => {
-                report.bindings.push(HotkeyBindingStatus {
-                    app_id: app_id.clone(),
-                    accelerator: accelerator.clone(),
-                    ok: false,
-                });
-                report
-                    .errors
-                    .push(format!("无法识别应用快捷键 {accelerator}"));
+            Err(error) => {
+                status.reason = Some(format!("无法识别快捷键: {error}"));
+                statuses.push(status);
                 continue;
             }
         };
         if !shortcut_is_safe(accelerator, &parsed) {
-            report.bindings.push(HotkeyBindingStatus {
-                app_id: app_id.clone(),
-                accelerator: accelerator.clone(),
-                ok: false,
-            });
-            report.errors.push(format!(
-                "应用快捷键 {accelerator} 需要 Ctrl / Alt / Win，或使用 F1–F24"
-            ));
+            status.reason = Some("需要 Ctrl / Alt / Win，或使用 F1–F24".to_string());
+            statuses.push(status);
             continue;
         }
         let key = parsed.to_string();
         if registered.contains_key(&key) || registered_toggle.as_deref() == Some(key.as_str()) {
-            report.bindings.push(HotkeyBindingStatus {
-                app_id: app_id.clone(),
-                accelerator: accelerator.clone(),
-                ok: false,
-            });
-            report
-                .errors
-                .push(format!("快捷键 {accelerator} 与已有快捷键重复"));
+            status.reason = Some("与已有快捷键重复".to_string());
+            statuses.push(status);
             continue;
         }
-        match shortcuts.register(parsed) {
+        match register_hotkey(&shortcuts, parsed) {
             Ok(()) => {
                 registered.insert(key, app_id.clone());
-                report.bindings.push(HotkeyBindingStatus {
-                    app_id: app_id.clone(),
-                    accelerator: accelerator.clone(),
-                    ok: true,
-                });
+                status.ok = true;
             }
-            Err(_) => {
-                report.bindings.push(HotkeyBindingStatus {
-                    app_id: app_id.clone(),
-                    accelerator: accelerator.clone(),
-                    ok: false,
-                });
-                report
-                    .errors
-                    .push(format!("应用快捷键 {accelerator} 被其它程序占用"));
-            }
+            Err(reason) => status.reason = Some(reason),
         }
+        statuses.push(status);
     }
 
-    HOTKEY_OK.store(report.toggle_ok, Ordering::SeqCst);
+    HOTKEY_OK.store(toggle_ok, Ordering::SeqCst);
     if let Ok(mut slot) = HOTKEY_TOGGLE.lock() {
         *slot = registered_toggle;
     }
     if let Ok(mut map) = HOTKEY_APPS.lock() {
         *map = Some(registered);
     }
-    if let Ok(mut slot) = HOTKEY_REPORT.lock() {
-        *slot = Some(report.clone());
-    }
-    report
+    hotkeys::set_status(statuses.clone());
+    statuses
 }
 
 fn launch_by_id(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
@@ -1636,16 +1669,14 @@ fn module_uninstall_hook(app: &tauri::AppHandle, id: &str) {
             if let Ok(mut map) = HOTKEY_APPS.lock() {
                 *map = None;
             }
-            if let Ok(mut slot) = HOTKEY_REPORT.lock() {
-                *slot = None;
-            }
+            hotkeys::set_status(Vec::new());
             let _ = autostart::set_enabled(false);
         }
         _ => {}
     }
 }
 
-fn toggle_main(app: &tauri::AppHandle) {
+pub(crate) fn toggle_main(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let visible = window.is_visible().unwrap_or(false);
         let focused = window.is_focused().unwrap_or(false);
@@ -1813,6 +1844,13 @@ pub fn run() {
                 spawn_memory_watcher(app.handle().clone());
             }
 
+            // 上次开启过「双击 Ctrl」时恢复钩子；失败只记日志，不阻塞启动。
+            if settings_snapshot(app.handle()).double_ctrl_enabled {
+                if let Err(error) = hotkeys::install(app.handle()) {
+                    eprintln!("双击 Ctrl 钩子启动失败: {error}");
+                }
+            }
+
             if std::env::args().any(|arg| arg == "--autostart")
                 && TRAY_OK.load(Ordering::SeqCst)
             {
@@ -1838,6 +1876,10 @@ pub fn run() {
             launch_app,
             launch_app_as_admin,
             add_custom_app,
+            lnk::scan_broken_shortcuts,
+            lnk::relocate_shortcut,
+            lnk::delete_shortcuts,
+            lnk::create_shortcut,
             reveal_app,
             save_settings,
             reset_settings,
@@ -1881,6 +1923,8 @@ pub fn run() {
             autostart_status,
             set_autostart,
             hotkey_status,
+            hotkey_restore_defaults,
+            set_double_ctrl,
             started_hidden,
             tray_status,
             memory_status,
@@ -1896,5 +1940,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building QiDian")
-        .run(|_app, _event| {});
+        .run(|_app, event| {
+            // 退出前确保卸载低级键盘钩子，不留僵尸线程。
+            if let tauri::RunEvent::Exit = event {
+                hotkeys::uninstall();
+            }
+        });
 }

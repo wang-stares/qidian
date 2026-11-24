@@ -165,6 +165,8 @@ export interface Settings {
   memorySkipApps: string[];
   hotkeyToggle: string;
   appHotkeys: Record<string, string>;
+  /** 是否启用「双击 Ctrl 唤出窗口」；与后端 settings.doubleCtrlEnabled 同步。 */
+  doubleCtrlEnabled: boolean;
   closeToTray: boolean;
   trayQuickApps: boolean;
   cleanupRecycleBin: boolean;
@@ -366,17 +368,38 @@ export interface UninstallReport {
   locked: LockedProcess[];
 }
 
-export interface HotkeyBindingStatus {
-  appId: string;
+/** 一条全局快捷键的注册结果：id 为 "toggle" 或 "app:<应用 id>"。 */
+export interface HotkeyStatusEntry {
+  id: string;
   accelerator: string;
   ok: boolean;
+  /** 失败原因；成功时为空。 */
+  reason?: string | null;
 }
 
-export interface HotkeyStatus {
-  toggle: string;
-  toggleOk: boolean;
-  bindings: HotkeyBindingStatus[];
-  errors: string[];
+export type HotkeyStatus = HotkeyStatusEntry[];
+
+/** 失效快捷方式（.lnk / .url）的扫描结果。 */
+export interface BrokenShortcut {
+  path: string;
+  name: string;
+  /** 快捷方式当前指向的目标；为空时表示没有目标。 */
+  target: string | null;
+  reason: string;
+  kind: "lnk" | "url";
+}
+
+/** 新建快捷方式的目标位置。 */
+export type ShortcutLocation = "desktop" | "startMenu" | "sameFolder";
+
+export interface CreateShortcutSpec {
+  target: string;
+  args?: string;
+  workdir?: string;
+  icon?: string;
+  name: string;
+  location: ShortcutLocation;
+  runAsAdmin: boolean;
 }
 
 export interface ProcessItem {

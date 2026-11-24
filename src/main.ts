@@ -41,6 +41,7 @@ import {
 import type {
   AccentChoice,
   AppEntry,
+  BrokenShortcut,
   CleanupApp,
   CleanupCandidate,
   CleanupDeleteReport,
@@ -56,6 +57,7 @@ import type {
   DiskUsageScan,
   DnsStatus,
   HotkeyStatus,
+  HotkeyStatusEntry,
   LaunchResult,
   LockedProcess,
   MemoryLevel,
@@ -77,6 +79,7 @@ import type {
   ProcessItem,
   ProcessTarget,
   Settings,
+  ShortcutLocation,
   SortMode,
   StartupItem,
   StartupSource,
@@ -209,6 +212,9 @@ interface UiState {
   commandOpen: boolean;
   commandIndex: number;
   commandAppId: string | null;
+  /** 命令面板当前视图：动作列表或「创建快捷方式」表单。 */
+  commandMode: "actions" | "createShortcut";
+  shortcutForm: ShortcutForm | null;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   customThemeName: string;
@@ -326,7 +332,18 @@ interface UiState {
   autoStartBusy: boolean;
   hotkeyStatus: HotkeyStatus | null;
   hotkeyCapture: { kind: "toggle" } | { kind: "app"; appId: string } | null;
+  /** 捕获中的组合键草稿，Enter 才写入设置。 */
+  hotkeyDraft: string | null;
   hotkeyAppPick: string;
+  doubleCtrlBusy: boolean;
+  /** 失效快捷方式：扫描结果、选择与忙碌态。 */
+  brokenShortcuts: BrokenShortcut[] | null;
+  brokenScanLoading: boolean;
+  brokenScanError: string | null;
+  brokenSelected: Set<string>;
+  brokenBusy: boolean;
+  /** 重新定位弹层：输入的新目标路径。 */
+  relocatePrompt: { path: string; name: string; target: string } | null;
   trayAvailable: boolean | null;
   bootLoading: boolean;
   bootError: string | null;
@@ -354,6 +371,14 @@ interface LockedPrompt {
   retry: () => Promise<void>;
 }
 
+/** 「创建快捷方式」表单的运行时状态。 */
+interface ShortcutForm {
+  appId: string;
+  name: string;
+  location: ShortcutLocation;
+  runAsAdmin: boolean;
+}
+
 const state: UiState = {
   settings: cloneSettings(DEFAULT_SETTINGS),
   apps: [],
@@ -377,6 +402,8 @@ const state: UiState = {
   commandOpen: false,
   commandIndex: 0,
   commandAppId: null,
+  commandMode: "actions",
+  shortcutForm: null,
   settingsOpen: false,
   settingsTab: "appearance",
   customThemeName: "",
@@ -483,7 +510,15 @@ const state: UiState = {
   autoStartBusy: false,
   hotkeyStatus: null,
   hotkeyCapture: null,
+  hotkeyDraft: null,
   hotkeyAppPick: "",
+  doubleCtrlBusy: false,
+  brokenShortcuts: null,
+  brokenScanLoading: false,
+  brokenScanError: null,
+  brokenSelected: new Set<string>(),
+  brokenBusy: false,
+  relocatePrompt: null,
   trayAvailable: null,
   bootLoading: false,
   bootError: null,
@@ -2436,13 +2471,33 @@ function handlePreviewAction(target: HTMLElement): void {
 
 /* ── command palette (Ctrl+K) ─────────────────────────────────── */
 
-type CommandActionId = "launch" | "admin" | "reveal" | "copy" | "pin" | "manage";
+type CommandActionId =
+  | "launch"
+  | "admin"
+  | "reveal"
+  | "copy"
+  | "pin"
+  | "manage"
+  | "create";
 
 interface CommandAction {
   id: CommandActionId;
   label: string;
   glyph: string;
   disabled?: boolean;
+  /** 禁用时的补充说明，显示在面板底部。 */
+  hint?: string;
+}
+
+/**
+ * 创建快捷方式时使用的真实启动路径：优先可执行文件（.exe 等），
+ * 否则使用应用的 shortcutPath，最后回退安装目录。
+ */
+function shortcutTargetFor(app: AppEntry): string {
+  const location = app.installLocation?.trim() ?? "";
+  const shortcut = app.shortcutPath?.trim() ?? "";
+  if (/\.(exe|com|bat|cmd)$/i.test(location)) return location;
+  return shortcut || location;
 }
 
 function commandActions(app: AppEntry): CommandAction[] {
@@ -2455,6 +2510,13 @@ function commandActions(app: AppEntry): CommandAction[] {
     { id: "reveal", label: "打开所在文件夹", glyph: "folder", disabled: !canReveal },
     { id: "copy", label: "复制应用路径", glyph: "doc", disabled: !path },
     { id: "pin", label: pinned ? "取消固定" : "固定到常用", glyph: "pin" },
+    {
+      id: "create",
+      label: "创建快捷方式",
+      glyph: "arrow-up-right",
+      disabled: !shortcutTargetFor(app),
+      hint: shortcutTargetFor(app) ? undefined : "该应用没有可执行文件或快捷方式路径，暂不支持创建快捷方式。",
+    },
     { id: "manage", label: "在「应用管理」中查看", glyph: "trash" },
   ];
 }
@@ -2470,6 +2532,8 @@ function openCommandPalette(): void {
   const firstEnabled = actions.findIndex((action) => !action.disabled);
   state.selectedId = app.id;
   state.commandAppId = app.id;
+  state.commandMode = "actions";
+  state.shortcutForm = null;
   state.commandIndex = firstEnabled >= 0 ? firstEnabled : 0;
   state.commandOpen = true;
   closeMenu();
@@ -2489,8 +2553,13 @@ function renderCommandPalette(): void {
     closeCommandPalette();
     return;
   }
+  if (state.commandMode === "createShortcut" && state.shortcutForm) {
+    renderShortcutForm(app);
+    return;
+  }
   const actions = commandActions(app);
   state.commandIndex = Math.min(Math.max(0, state.commandIndex), actions.length - 1);
+  const hint = actions[state.commandIndex]?.hint;
   els.commandLayer.innerHTML = `<div class="command-palette" role="dialog" aria-label="应用命令" tabindex="-1">
     <div class="command-head">
       <span class="command-icon"${iconHostAttr(app)}>${renderIconMarkup(app)}</span>
@@ -2507,14 +2576,100 @@ function renderCommandPalette(): void {
             index === state.commandIndex ? " is-active" : ""
           }" data-command-action="${action.id}" data-command-index="${index}"${
             action.disabled ? " disabled" : ""
-          }>${icon(action.glyph)}<span>${escapeHtml(action.label)}</span></button>`,
+          }${action.hint ? ` title="${escapeHtml(action.hint)}"` : ""}>${icon(action.glyph)}<span>${escapeHtml(
+            action.label,
+          )}</span></button>`,
         )
         .join("")}
     </div>
+    ${hint ? `<div class="command-hint">${icon("info")}<span>${escapeHtml(hint)}</span></div>` : ""}
     <div class="command-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></div>
   </div>`;
   els.commandLayer.hidden = false;
   observeIconHosts();
+}
+
+/** 创建快捷方式表单：名称、位置与管理员运行，target 固定为应用真实启动路径。 */
+function renderShortcutForm(app: AppEntry): void {
+  const form = state.shortcutForm;
+  if (!form) return;
+  const target = shortcutTargetFor(app);
+  const locations: { id: ShortcutLocation; label: string }[] = [
+    { id: "desktop", label: "桌面" },
+    { id: "startMenu", label: "开始菜单" },
+    { id: "sameFolder", label: "与程序同目录" },
+  ];
+  els.commandLayer.innerHTML = `<div class="command-palette command-form" role="dialog" aria-label="创建快捷方式" tabindex="-1">
+    <div class="command-head">
+      <span class="command-icon"${iconHostAttr(app)}>${renderIconMarkup(app)}</span>
+      <div class="command-meta">
+        <strong>创建快捷方式</strong>
+        <span>${escapeHtml(app.name)}</span>
+      </div>
+      <kbd class="command-esc">Esc</kbd>
+    </div>
+    <div class="command-form-body">
+      <label class="command-field">
+        <span>名称</span>
+        <input data-shortcut-name value="${escapeHtml(form.name)}" maxlength="80" spellcheck="false" />
+      </label>
+      <label class="command-field">
+        <span>位置</span>
+        <select data-shortcut-location>
+          ${locations
+            .map(
+              (item) =>
+                `<option value="${item.id}"${
+                  form.location === item.id ? " selected" : ""
+                }>${item.label}</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+      <label class="command-check">
+        <input type="checkbox" data-shortcut-admin${form.runAsAdmin ? " checked" : ""} />
+        <span>以管理员身份运行</span>
+      </label>
+      <div class="command-target"><span>目标</span><code title="${escapeHtml(target)}">${escapeHtml(
+        target,
+      )}</code></div>
+    </div>
+    <div class="command-form-actions">
+      <button class="ghost-btn" data-command-form="cancel">取消</button>
+      <button class="primary-btn" data-command-form="submit">${icon("check")}创建</button>
+    </div>
+  </div>`;
+  els.commandLayer.hidden = false;
+  observeIconHosts();
+  window.requestAnimationFrame(() => {
+    const input = els.commandLayer.querySelector<HTMLInputElement>("[data-shortcut-name]");
+    input?.focus({ preventScroll: true });
+    input?.select();
+  });
+}
+
+async function submitShortcutForm(): Promise<void> {
+  const form = state.shortcutForm;
+  const app = state.commandAppId ? appMap().get(state.commandAppId) : undefined;
+  if (!form || !app) return;
+  const target = shortcutTargetFor(app);
+  if (!target) {
+    showToast("该应用没有可执行文件或快捷方式路径，无法创建快捷方式", "error");
+    return;
+  }
+  const name = form.name.trim() || app.name;
+  try {
+    const path = await api.createShortcut({
+      target,
+      name,
+      location: form.location,
+      runAsAdmin: form.runAsAdmin,
+    });
+    closeCommandPalette();
+    showToast(`已创建快捷方式：${path}`, "success");
+  } catch (error) {
+    showToast(`创建快捷方式失败：${String(error)}`, "error");
+  }
 }
 
 function closeCommandPalette(): void {
@@ -2522,6 +2677,8 @@ function closeCommandPalette(): void {
   state.commandOpen = false;
   state.commandAppId = null;
   state.commandIndex = 0;
+  state.commandMode = "actions";
+  state.shortcutForm = null;
   els.commandLayer.hidden = true;
   els.commandLayer.innerHTML = "";
 }
@@ -2550,6 +2707,17 @@ function executeCommandAction(id: CommandActionId): void {
   }
   const action = commandActions(app).find((item) => item.id === id);
   if (!action || action.disabled) return;
+  if (action.id === "create") {
+    state.commandMode = "createShortcut";
+    state.shortcutForm = {
+      appId: app.id,
+      name: app.name,
+      location: "desktop",
+      runAsAdmin: false,
+    };
+    renderCommandPalette();
+    return;
+  }
   closeCommandPalette();
   if (action.id === "launch") {
     void launchApp(app);
@@ -6017,6 +6185,183 @@ function cleanupRow(candidate: CleanupCandidate): string {
   </div>`;
 }
 
+async function loadBrokenShortcuts(): Promise<void> {
+  if (state.brokenScanLoading) return;
+  state.brokenScanLoading = true;
+  state.brokenScanError = null;
+  state.brokenSelected = new Set<string>();
+  refreshActive();
+  try {
+    state.brokenShortcuts = await api.scanBrokenShortcuts();
+  } catch (error) {
+    state.brokenScanError = String(error);
+  } finally {
+    state.brokenScanLoading = false;
+    refreshActive();
+  }
+}
+
+function brokenShortcutRow(item: BrokenShortcut): string {
+  const selected = state.brokenSelected.has(item.path);
+  return `<div class="shortcut-row${selected ? " is-selected" : ""}">
+    <button class="perf-check" role="checkbox" aria-checked="${selected}" aria-label="选择 ${escapeHtml(
+      item.name,
+    )}" data-settings-action="shortcut-toggle" data-path="${escapeHtml(item.path)}"${
+      state.brokenBusy ? " disabled" : ""
+    }>${icon("check")}</button>
+    <div class="shortcut-copy">
+      <div class="shortcut-name">${escapeHtml(item.name)}<span class="shortcut-kind">${escapeHtml(
+        item.kind.toUpperCase(),
+      )}</span></div>
+      <div class="shortcut-target" title="${escapeHtml(item.target ?? "")}">${
+        item.target ? escapeHtml(item.target) : "目标为空"
+      }</div>
+      <div class="shortcut-reason">${escapeHtml(item.reason)}</div>
+    </div>
+    <button class="ghost-btn" data-settings-action="shortcut-relocate-open" data-path="${escapeHtml(
+      item.path,
+    )}" data-name="${escapeHtml(item.name)}" data-target="${escapeHtml(item.target ?? "")}"${
+      state.brokenBusy ? " disabled" : ""
+    }>重新定位</button>
+  </div>`;
+}
+
+function cleanupBrokenSection(): string {
+  const list = state.brokenShortcuts;
+  const selectedCount = list
+    ? list.filter((item) => state.brokenSelected.has(item.path)).length
+    : 0;
+  const body = state.brokenScanLoading
+    ? perfState("正在扫描桌面与开始菜单中的快捷方式……")
+    : state.brokenScanError
+      ? perfState(`扫描失效快捷方式失败：${state.brokenScanError}`, true, "shortcut-scan")
+      : list === null
+        ? `<div class="perf-empty-scan">${icon("info")}<span>点击「扫描」检查桌面与开始菜单中的失效快捷方式。扫描只读，不会自动修改你的快捷方式。</span></div>`
+        : list.length === 0
+          ? `<div class="perf-empty-scan">${icon("check")}<span>没有发现失效的快捷方式</span></div>`
+          : `<div class="cleanup-summary">
+               <span>共 ${list.length} 个失效快捷方式 · 已选 ${selectedCount} 个</span>
+               <span>扫描只读，不会自动修改你的快捷方式</span>
+             </div>
+             <div class="shortcut-list">${list.map(brokenShortcutRow).join("")}</div>
+             <div class="cleanup-actions">
+               <button class="ghost-btn" data-settings-action="shortcut-select-all"${
+                 state.brokenBusy ? " disabled" : ""
+               }>${selectedCount > 0 && selectedCount === list.length ? "取消全选" : "全选"}</button>
+               <span>已选 ${selectedCount} 个</span>
+               <button class="mini-danger" data-settings-action="shortcut-delete"${
+                 state.brokenBusy || selectedCount === 0 ? " disabled" : ""
+               }>${state.brokenBusy ? "删除中…" : "删除选中"}</button>
+             </div>`;
+  return `<div class="settings-section">
+    <div class="perf-head">
+      <div>
+        <h3 class="settings-section-title">失效快捷方式</h3>
+        <p class="background-lead">检查桌面与开始菜单中目标丢失的快捷方式；扫描只读，不会自动修改你的快捷方式。</p>
+      </div>
+      <button class="ghost-btn" data-settings-action="shortcut-scan" data-focus-key="shortcut-scan"${
+        state.brokenScanLoading ? " disabled" : ""
+      }>${icon("refresh")}${state.brokenScanLoading ? "扫描中…" : "扫描"}</button>
+    </div>
+    ${body}
+    ${state.relocatePrompt ? relocatePromptMarkup() : ""}
+  </div>`;
+}
+
+/** 轻量「重新定位」弹层，不依赖系统文件选择器。 */
+function relocatePromptMarkup(): string {
+  const prompt = state.relocatePrompt;
+  if (!prompt) return "";
+  return `<div class="shortcut-dialog-layer" role="presentation">
+    <div class="shortcut-dialog" role="dialog" aria-modal="true" aria-label="重新定位快捷方式">
+      <div class="shortcut-dialog-head">
+        <strong>重新定位快捷方式</strong>
+        <span title="${escapeHtml(prompt.name)}">${escapeHtml(prompt.name)}</span>
+      </div>
+      <label class="shortcut-dialog-field">
+        <span>新的目标路径</span>
+        <input data-relocate-input value="${escapeHtml(prompt.target)}" placeholder="例如 C:\\Program Files\\App\\App.exe" spellcheck="false" />
+      </label>
+      <p class="shortcut-dialog-hint">仅更新这一个快捷方式的目标，不会移动或删除原文件。</p>
+      <div class="shortcut-dialog-actions">
+        <button class="ghost-btn" data-settings-action="shortcut-relocate-cancel"${
+          state.brokenBusy ? " disabled" : ""
+        }>取消</button>
+        <button class="primary-btn" data-settings-action="shortcut-relocate-save"${
+          state.brokenBusy ? " disabled" : ""
+        }>${state.brokenBusy ? "保存中…" : "保存"}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleBrokenShortcut(path: string): void {
+  if (state.brokenBusy) return;
+  if (state.brokenSelected.has(path)) state.brokenSelected.delete(path);
+  else state.brokenSelected.add(path);
+  refreshActive();
+}
+
+function toggleBrokenSelectAll(): void {
+  const list = state.brokenShortcuts ?? [];
+  const allSelected = list.length > 0 && list.every((item) => state.brokenSelected.has(item.path));
+  state.brokenSelected = allSelected
+    ? new Set<string>()
+    : new Set(list.map((item) => item.path));
+  refreshActive();
+}
+
+async function deleteSelectedBrokenShortcuts(): Promise<void> {
+  if (state.brokenBusy) return;
+  const list = state.brokenShortcuts ?? [];
+  const paths = list
+    .filter((item) => state.brokenSelected.has(item.path))
+    .map((item) => item.path);
+  if (paths.length === 0) {
+    showToast("请先选择要删除的快捷方式", "info");
+    return;
+  }
+  state.brokenBusy = true;
+  refreshActive();
+  try {
+    const deleted = await api.deleteShortcuts(paths);
+    const removing = new Set(paths);
+    state.brokenShortcuts = (state.brokenShortcuts ?? []).filter(
+      (item) => !removing.has(item.path),
+    );
+    state.brokenSelected = new Set<string>();
+    showToast(`已删除 ${deleted} 个失效快捷方式`, "success");
+  } catch (error) {
+    showToast(`删除失败：${String(error)}`, "error");
+  } finally {
+    state.brokenBusy = false;
+    refreshActive();
+  }
+}
+
+async function saveRelocatedShortcut(): Promise<void> {
+  const prompt = state.relocatePrompt;
+  if (!prompt || state.brokenBusy) return;
+  const newTarget = prompt.target.trim();
+  if (!newTarget) {
+    showToast("请输入新的目标路径", "error");
+    return;
+  }
+  state.brokenBusy = true;
+  refreshActive();
+  try {
+    await api.relocateShortcut(prompt.path, newTarget);
+    state.relocatePrompt = null;
+    showToast("已重新定位快捷方式", "success");
+    await loadBrokenShortcuts();
+  } catch (error) {
+    showToast(`重新定位失败：${String(error)}`, "error");
+  } finally {
+    state.brokenBusy = false;
+    refreshActive();
+  }
+}
+
 function cleanupPanel(): string {
   const scan = state.cleanupScan;
   const candidates = cleanupCandidates();
@@ -6108,7 +6453,7 @@ function cleanupPanel(): string {
                 }>${state.cleanupBusy ? "删除中…" : pending ? (state.settings.cleanupRecycleBin ? "确认移入回收站" : "确认永久删除") : "删除选中"}</button>
               </div>`;
 
-  return `${cleanupAppsSection()}<div class="settings-section">
+  return `${cleanupAppsSection()}${cleanupBrokenSection()}<div class="settings-section">
     <div class="perf-head">
       <div>
         <h3 class="settings-section-title">应用文件夹与空间清理</h3>
@@ -7172,33 +7517,52 @@ function hotkeyKbd(accelerator: string): string {
     .join(`<i>+</i>`);
 }
 
+function hotkeyStatusEntry(id: string): HotkeyStatusEntry | undefined {
+  return state.hotkeyStatus?.find((item) => item.id === id);
+}
+
+function hotkeyStatusLabel(entry: HotkeyStatusEntry | undefined): string {
+  if (!entry) return `<span class="hotkey-state">待应用</span>`;
+  if (entry.ok) return `<span class="hotkey-state is-good">正常</span>`;
+  const reason = entry.reason?.trim() || "注册失败";
+  return `<span class="hotkey-state is-bad" title="${escapeHtml(reason)}">${escapeHtml(
+    reason,
+  )}</span>`;
+}
+
+/** 录制式输入框：非捕获态显示现有组合，捕获态显示草稿或提示。 */
+function hotkeyInput(
+  accelerator: string,
+  listening: boolean,
+  placeholder = "未设置",
+  id = "",
+): string {
+  const value = listening ? (state.hotkeyDraft ?? "") : accelerator;
+  return `<input class="hotkey-input${listening ? " is-listening" : ""}" readonly spellcheck="false" value="${escapeHtml(
+    value,
+  )}" placeholder="${escapeHtml(listening ? "请按下快捷键…" : placeholder)}"${
+    id ? ` data-hotkey-input="${escapeHtml(id)}"` : ""
+  } aria-label="快捷键" />`;
+}
+
 function hotkeyBindingRow(appId: string, accelerator: string): string {
   const app = state.apps.find((item) => item.id === appId);
-  const status = state.hotkeyStatus?.bindings.find((item) => item.appId === appId);
+  const status = hotkeyStatusEntry(`app:${appId}`);
   const listening =
     state.hotkeyCapture?.kind === "app" && state.hotkeyCapture.appId === appId;
-  const stateLabel = listening
-    ? `<span class="hotkey-state is-live">录制中</span>`
-    : status
-      ? `<span class="hotkey-state ${status.ok ? "is-good" : "is-bad"}">${
-          status.ok ? "已生效" : "未生效"
-        }</span>`
-      : `<span class="hotkey-state">待应用</span>`;
   return `<div class="hotkey-row${listening ? " is-listening" : ""}">
     <div class="hotkey-app-name" title="${escapeHtml(app?.name ?? appId)}">${escapeHtml(
       app?.name ?? "已移除的应用",
     )}</div>
-    <div class="hotkey-combo">${
-      listening ? `<span class="hotkey-live">按下组合键…</span>` : hotkeyKbd(accelerator)
-    }</div>
-    ${stateLabel}
+    ${hotkeyInput(accelerator, listening)}
+    ${listening ? `<span class="hotkey-state is-live">录制中</span>` : hotkeyStatusLabel(status)}
     <div class="hotkey-actions">
       <button class="ghost-btn" data-settings-action="${
         listening ? "boot-hotkey-cancel" : "boot-hotkey-app-edit"
-      }" data-id="${escapeHtml(appId)}">${listening ? "取消" : "修改"}</button>
+      }" data-id="${escapeHtml(appId)}">${listening ? "取消" : "录入"}</button>
       <button class="mini-danger" data-settings-action="boot-hotkey-app-delete" data-id="${escapeHtml(
         appId,
-      )}"${listening ? " disabled" : ""}>删除</button>
+      )}"${listening ? " disabled" : ""}>清除</button>
     </div>
   </div>`;
 }
@@ -7206,7 +7570,39 @@ function hotkeyBindingRow(appId: string, accelerator: string): string {
 function hotkeyCaptureBar(label: string): string {
   return `<div class="hotkey-capture-bar">${icon("zap")}<span>正在为 ${escapeHtml(
     label,
-  )} 录制快捷键，按下组合键（Esc 取消）</span></div>`;
+  )} 录制：按下组合键后按 Enter 确认，Esc 取消，Backspace 清除。Win 键为系统保留，不可使用。</span></div>`;
+}
+
+function hotkeyOverviewRows(settings: Settings): string {
+  const apps = new Map(state.apps.map((app) => [app.id, app.name]));
+  const rows: { id: string; accelerator: string; role: string }[] = [
+    { id: "toggle", accelerator: settings.hotkeyToggle, role: "显示 / 隐藏窗口" },
+  ];
+  for (const [appId, accelerator] of Object.entries(settings.appHotkeys)) {
+    rows.push({
+      id: `app:${appId}`,
+      accelerator,
+      role: apps.get(appId) ?? "已移除的应用",
+    });
+  }
+  return rows
+    .map((row) => {
+      const entry = hotkeyStatusEntry(row.id);
+      const accelerator = entry?.accelerator || row.accelerator;
+      const status = entry
+        ? entry.ok
+          ? `<span class="hotkey-state is-good">正常</span>`
+          : `<span class="hotkey-state is-bad">${
+              entry.reason?.trim() ? escapeHtml(entry.reason) : "注册失败"
+            }</span>`
+        : `<span class="hotkey-state">待应用</span>`;
+      return `<div class="hotkey-table-row">
+        <div class="hotkey-table-key">${hotkeyKbd(accelerator)}</div>
+        <div class="hotkey-table-role">${escapeHtml(row.role)}</div>
+        <div class="hotkey-table-state">${status}</div>
+      </div>`;
+    })
+    .join("");
 }
 
 function bootPanel(): string {
@@ -7216,7 +7612,6 @@ function bootPanel(): string {
   const autoStart = state.autoStart === true;
   const autoBusy = state.autoStart === null || state.bootLoading || state.autoStartBusy;
   const settings = state.settings;
-  const hotkey = state.hotkeyStatus;
   const capture = state.hotkeyCapture;
   const bindings = Object.entries(settings.appHotkeys);
   const availableApps = state.apps.filter((app) => !(app.id in settings.appHotkeys));
@@ -7225,11 +7620,13 @@ function bootPanel(): string {
     capture?.kind === "app"
       ? state.apps.find((app) => app.id === capture.appId)
       : null;
-  const hotkeyErrors = hotkey?.errors.length
-    ? `<div class="background-note is-warn">${icon("info")}<span>${escapeHtml(
-        hotkey.errors.join("；"),
-      )}</span></div>`
-    : "";
+  const failedCount = state.hotkeyStatus?.filter((item) => !item.ok).length ?? 0;
+  const hotkeyWarn =
+    failedCount > 0
+      ? `<div class="hotkey-warn">${icon("info")}<span>以下快捷键被其他程序占用，已保留原配置。可以恢复默认快捷键后重新设置。</span><button class="ghost-btn" data-settings-action="boot-hotkey-restore-all"${
+          state.bootLoading ? " disabled" : ""
+        }>恢复默认快捷键</button></div>`
+      : "";
   const appOptions = availableApps
     .map(
       (app) =>
@@ -7289,37 +7686,64 @@ function bootPanel(): string {
           <div class="setting-title">显示 / 隐藏启点</div>
           <div class="setting-desc">${
             !isTauri
-              ? "浏览器预览不注册全局热键；桌面版可自定义组合键。"
+              ? "浏览器预览不注册全局热键；桌面版可录入组合键。"
               : toggleListening
-                ? "按下新的组合键，Esc 取消。"
-                : "点击“修改”后按下组合键；至少包含 Ctrl / Alt / Win 之一（Shift 可叠加）。"
+                ? "按下组合键后按 Enter 写入，Esc 取消，Backspace 不可清空全局快捷键。"
+                : "点击“录入”后按下组合键，再按 Enter 写入；至少包含 Ctrl / Alt 之一（Shift 可叠加）。"
           }</div>
         </div>
         <div class="setting-control hotkey-control">
-          <span class="boot-key">${
-            toggleListening
-              ? `<span class="hotkey-live">按下组合键…</span>`
-              : hotkeyKbd(settings.hotkeyToggle)
-          }</span>
+          ${hotkeyInput(settings.hotkeyToggle, toggleListening, "未设置")}
           ${
             !isTauri
               ? `<span class="boot-status is-pending">仅桌面版</span>`
-              : bootStatus(hotkey?.toggleOk ?? null, "可用", "被占用")
+              : hotkeyStatusLabel(hotkeyStatusEntry("toggle"))
           }
           <button class="ghost-btn" data-settings-action="${
             toggleListening ? "boot-hotkey-cancel" : "boot-hotkey-edit"
-          }">${toggleListening ? "取消" : "修改"}</button>
-          <button class="ghost-btn" data-settings-action="boot-hotkey-reset">恢复默认</button>
+          }">${toggleListening ? "取消" : "录入"}</button>
         </div>
       </div>
       ${toggleListening ? hotkeyCaptureBar("显示 / 隐藏启点") : ""}
-      ${hotkeyErrors}
+      <div class="setting-row">
+        <div class="setting-copy">
+          <div class="setting-title">双击 Ctrl 唤出窗口</div>
+          <div class="setting-desc">连续按两次 Ctrl 显示 / 隐藏启点；不影响 Ctrl+C 等组合键。</div>
+        </div>
+        <div class="setting-control">
+          <button class="switch" role="switch" aria-checked="${settings.doubleCtrlEnabled}" aria-label="双击 Ctrl 唤出窗口，当前${
+            settings.doubleCtrlEnabled ? "已开启" : "已关闭"
+          }" data-settings-action="boot-double-ctrl"${
+            state.doubleCtrlBusy ? " disabled" : ""
+          }></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="perf-head">
+      <div>
+        <h3 class="settings-section-title">快捷键一览</h3>
+        <p class="background-lead">查看所有全局快捷键的注册状态；失败时原配置会保留。</p>
+      </div>
+    </div>
+    <div class="settings-card">
+      ${hotkeyWarn}
+      <div class="hotkey-table">
+        <div class="hotkey-table-head">
+          <span>快捷键</span><span>作用</span><span>状态</span>
+        </div>
+        ${
+          state.hotkeyStatus === null
+            ? `<div class="hotkey-table-empty">正在读取快捷键状态…</div>`
+            : hotkeyOverviewRows(settings)
+        }
+      </div>
     </div>
 
     <div class="perf-head">
       <div>
         <h3 class="settings-section-title">应用快捷键</h3>
-        <p class="background-lead">最多 20 个；按下后直接启动对应应用，不打开启点窗口。</p>
+        <p class="background-lead">最多 20 个；按下后直接启动对应应用。点击“录入”后按组合键、Enter 写入，Backspace 可清除。</p>
       </div>
     </div>
     <div class="settings-card">
@@ -7492,20 +7916,23 @@ function startHotkeyCapture(
   target: { kind: "toggle" } | { kind: "app"; appId: string },
 ): void {
   state.hotkeyCapture = target;
+  state.hotkeyDraft = null;
   refreshActive();
 }
 
 function cancelHotkeyCapture(): void {
   state.hotkeyCapture = null;
+  state.hotkeyDraft = null;
   refreshActive();
 }
 
 function acceleratorFromEvent(event: KeyboardEvent): string | null {
+  // Win（Super）组合由系统保留，不生成 accelerator。
+  if (event.metaKey) return null;
   const parts: string[] = [];
   if (event.ctrlKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  if (event.metaKey) parts.push("Super");
 
   const code = event.code;
   let name: string | null = null;
@@ -7525,7 +7952,8 @@ function acceleratorFromEvent(event: KeyboardEvent): string | null {
   else if (event.key === "ArrowRight") name = "Right";
 
   if (!name) return null;
-  const strong = event.ctrlKey || event.altKey || event.metaKey;
+  // 与现有格式一致：必须带 Ctrl / Alt（F1-F24 可单独使用），Shift 只作叠加。
+  const strong = event.ctrlKey || event.altKey;
   if (!strong && !/^F\d+$/.test(name)) return null;
   return [...parts, name].join("+");
 }
@@ -7533,6 +7961,7 @@ function acceleratorFromEvent(event: KeyboardEvent): string | null {
 async function commitHotkey(combo: string): Promise<void> {
   const capture = state.hotkeyCapture;
   state.hotkeyCapture = null;
+  state.hotkeyDraft = null;
   if (!capture) return;
   const lower = combo.toLowerCase();
   if (capture.kind === "toggle") {
@@ -7567,24 +7996,41 @@ async function commitHotkey(combo: string): Promise<void> {
   refreshActive();
   await queueSaveAndWait();
   await loadHotkeyStatus();
-  const ok =
+  const entry =
     capture.kind === "toggle"
-      ? state.hotkeyStatus?.toggleOk !== false
-      : state.hotkeyStatus?.bindings.find((item) => item.appId === capture.appId)?.ok !==
-        false;
+      ? hotkeyStatusEntry("toggle")
+      : hotkeyStatusEntry(`app:${capture.appId}`);
+  const ok = entry ? entry.ok : true;
   showToast(
     ok ? `已设置快捷键：${combo}` : `${combo} 未能注册，可能已被其它程序占用`,
     ok ? "success" : "error",
   );
 }
 
+/** 捕获时按 Backspace：应用快捷键可清空，全局键必须保留。 */
+async function clearCapturedHotkey(): Promise<void> {
+  const capture = state.hotkeyCapture;
+  if (!capture) return;
+  if (capture.kind === "toggle") {
+    showToast("全局快捷键不能为空，请录制新的组合键", "error");
+    return;
+  }
+  await deleteAppHotkey(capture.appId);
+}
+
 async function deleteAppHotkey(appId: string): Promise<void> {
-  if (!(appId in state.settings.appHotkeys)) return;
+  if (!(appId in state.settings.appHotkeys)) {
+    state.hotkeyCapture = null;
+    state.hotkeyDraft = null;
+    refreshActive();
+    return;
+  }
   const next = { ...state.settings.appHotkeys };
   delete next[appId];
   state.settings = { ...state.settings, appHotkeys: next };
   if (state.hotkeyCapture?.kind === "app" && state.hotkeyCapture.appId === appId) {
     state.hotkeyCapture = null;
+    state.hotkeyDraft = null;
   }
   refreshActive();
   await queueSaveAndWait();
@@ -7592,13 +8038,44 @@ async function deleteAppHotkey(appId: string): Promise<void> {
   showToast("已移除该应用的快捷键", "info");
 }
 
-async function resetToggleHotkey(): Promise<void> {
+/** 恢复默认快捷键：调用后端重新注册，再刷新状态。 */
+async function restoreDefaultHotkeys(): Promise<void> {
   state.hotkeyCapture = null;
-  state.settings = { ...state.settings, hotkeyToggle: "Ctrl+Alt+Q" };
+  state.hotkeyDraft = null;
+  try {
+    await api.hotkeyRestoreDefaults();
+    state.settings = {
+      ...state.settings,
+      hotkeyToggle: DEFAULT_SETTINGS.hotkeyToggle,
+      appHotkeys: {},
+    };
+    refreshActive();
+    await loadHotkeyStatus();
+    showToast("已恢复默认快捷键", "success");
+  } catch (error) {
+    showToast(`恢复默认快捷键失败：${String(error)}`, "error");
+  }
+}
+
+async function toggleDoubleCtrl(): Promise<void> {
+  if (state.doubleCtrlBusy) return;
+  const enabled = !state.settings.doubleCtrlEnabled;
+  state.doubleCtrlBusy = true;
+  state.settings = { ...state.settings, doubleCtrlEnabled: enabled };
   refreshActive();
-  await queueSaveAndWait();
-  await loadHotkeyStatus();
-  showToast("已恢复默认快捷键 Ctrl + Alt + Q", "info");
+  try {
+    // 同时写入设置文件并让后端重新挂载监听。
+    await queueSaveAndWait();
+    await api.setDoubleCtrl(enabled);
+    showToast(enabled ? "已开启双击 Ctrl 唤出窗口" : "已关闭双击 Ctrl 唤出窗口", "info");
+  } catch (error) {
+    state.settings = { ...state.settings, doubleCtrlEnabled: !enabled };
+    void queueSave();
+    showToast(`设置失败：${String(error)}`, "error");
+  } finally {
+    state.doubleCtrlBusy = false;
+    refreshActive();
+  }
 }
 
 function toggleCloseToTray(): void {
@@ -7930,6 +8407,9 @@ function closeSettings(): void {
   state.modulePendingUninstall = null;
   state.lockedPrompt = null;
   state.lockedBusy = false;
+  state.hotkeyCapture = null;
+  state.hotkeyDraft = null;
+  state.relocatePrompt = null;
   renderAll();
   queueSave();
   if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
@@ -7942,6 +8422,11 @@ async function onModalClick(event: MouseEvent): Promise<void> {
   const target = event.target as HTMLElement;
   if (target === els.modalLayer) {
     closeSettings();
+    return;
+  }
+  if (target.classList.contains("shortcut-dialog-layer")) {
+    state.relocatePrompt = null;
+    refreshActive();
     return;
   }
   const actionEl = target.closest<HTMLElement>("[data-settings-action]");
@@ -7967,6 +8452,9 @@ async function onModalClick(event: MouseEvent): Promise<void> {
         state.modulePendingUninstall = null;
         state.lockedPrompt = null;
         state.lockedBusy = false;
+        state.hotkeyCapture = null;
+        state.hotkeyDraft = null;
+        state.relocatePrompt = null;
         refreshActive();
         const body = els.modalLayer.querySelector<HTMLElement>(".modal-body");
         if (body) body.scrollTop = 0;
@@ -8031,6 +8519,43 @@ async function onModalClick(event: MouseEvent): Promise<void> {
       refreshCleanupAppList();
       return;
     }
+    case "shortcut-scan":
+      void loadBrokenShortcuts();
+      return;
+    case "shortcut-toggle": {
+      const path = actionEl.dataset.path;
+      if (path) toggleBrokenShortcut(path);
+      return;
+    }
+    case "shortcut-select-all":
+      toggleBrokenSelectAll();
+      return;
+    case "shortcut-delete":
+      void deleteSelectedBrokenShortcuts();
+      return;
+    case "shortcut-relocate-open": {
+      const path = actionEl.dataset.path;
+      if (!path) return;
+      state.relocatePrompt = {
+        path,
+        name: actionEl.dataset.name ?? "快捷方式",
+        target: actionEl.dataset.target ?? "",
+      };
+      refreshActive();
+      window.requestAnimationFrame(() => {
+        els.contentBody.querySelector<HTMLInputElement>("[data-relocate-input]")?.focus({
+          preventScroll: true,
+        });
+      });
+      return;
+    }
+    case "shortcut-relocate-cancel":
+      state.relocatePrompt = null;
+      refreshActive();
+      return;
+    case "shortcut-relocate-save":
+      void saveRelocatedShortcut();
+      return;
     case "cleanup-recycle-toggle": {
       const cleanupRecycleBin = !state.settings.cleanupRecycleBin;
       patchSettings({ cleanupRecycleBin });
@@ -8070,8 +8595,11 @@ async function onModalClick(event: MouseEvent): Promise<void> {
     case "boot-hotkey-cancel":
       cancelHotkeyCapture();
       return;
-    case "boot-hotkey-reset":
-      void resetToggleHotkey();
+    case "boot-hotkey-restore-all":
+      void restoreDefaultHotkeys();
+      return;
+    case "boot-double-ctrl":
+      void toggleDoubleCtrl();
       return;
     case "boot-hotkey-app-add": {
       const appId = state.hotkeyAppPick;
@@ -8963,6 +9491,8 @@ function onModalInput(event: Event): void {
 }
 
 function onModalKeydown(event: KeyboardEvent): void {
+  // 录制快捷键时由全局 keydown 统一处理，避免 Esc 直接关闭设置。
+  if (state.hotkeyCapture) return;
   const target = event.target as HTMLElement;
   if (target.matches("[data-cat-rename-input]")) {
     if (event.key === "Enter") {
@@ -9619,10 +10149,30 @@ els.contentBody.addEventListener("click", (event) => {
   void onModalClick(event);
 });
 els.contentBody.addEventListener("input", (event) => {
-  const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-app-search]");
+  const target = event.target as HTMLElement;
+  const relocate = target.closest<HTMLInputElement>("[data-relocate-input]");
+  if (relocate) {
+    if (state.relocatePrompt) state.relocatePrompt.target = relocate.value;
+    return;
+  }
+  const input = target.closest<HTMLInputElement>("[data-app-search]");
   if (!input) return;
   state.cleanupAppQuery = input.value;
   refreshCleanupAppList();
+});
+els.contentBody.addEventListener("keydown", (event) => {
+  if (!state.relocatePrompt) return;
+  if (event.key === "Enter") {
+    if (!(event.target as HTMLElement).matches("[data-relocate-input]")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void saveRelocatedShortcut();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    state.relocatePrompt = null;
+    refreshActive();
+  }
 });
 els.modalLayer.addEventListener("input", onModalInput);
 els.modalLayer.addEventListener("keydown", onModalKeydown);
@@ -9635,12 +10185,47 @@ els.preview.addEventListener("click", (event) => {
 els.commandLayer.addEventListener("click", (event) => {
   event.stopPropagation();
   const target = event.target as HTMLElement;
+  const formAction = target.closest<HTMLElement>("[data-command-form]")?.dataset.commandForm;
+  if (formAction === "submit") {
+    void submitShortcutForm();
+    return;
+  }
+  if (formAction === "cancel") {
+    closeCommandPalette();
+    return;
+  }
   const actionEl = target.closest<HTMLElement>("[data-command-action]");
   if (actionEl) {
     executeCommandAction(actionEl.dataset.commandAction as CommandActionId);
     return;
   }
   if (!target.closest(".command-palette")) closeCommandPalette();
+});
+els.commandLayer.addEventListener("input", (event) => {
+  const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-shortcut-name]");
+  if (!input || !state.shortcutForm) return;
+  state.shortcutForm.name = input.value;
+});
+els.commandLayer.addEventListener("change", (event) => {
+  const target = event.target as HTMLElement;
+  if (!state.shortcutForm) return;
+  const select = target.closest<HTMLSelectElement>("[data-shortcut-location]");
+  if (select) {
+    const value = select.value;
+    if (value === "desktop" || value === "startMenu" || value === "sameFolder") {
+      state.shortcutForm.location = value;
+    }
+    return;
+  }
+  const admin = target.closest<HTMLInputElement>("[data-shortcut-admin]");
+  if (admin) state.shortcutForm.runAsAdmin = admin.checked;
+});
+els.commandLayer.addEventListener("keydown", (event) => {
+  if (state.commandMode !== "createShortcut") return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void submitShortcutForm();
+  }
 });
 els.contentBody.addEventListener("pointerover", (event) => {
   const node = (event.target as HTMLElement).closest<HTMLElement>("[data-app-id]");
@@ -9664,19 +10249,41 @@ window.addEventListener("keydown", (event) => {
       cancelHotkeyCapture();
       return;
     }
-    if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
-    const combo = acceleratorFromEvent(event);
-    if (!combo) {
-      showToast("请按字母、数字或功能键，并至少包含 Ctrl / Alt / Win 之一", "error");
+    if (event.key === "Enter") {
+      if (state.hotkeyDraft) void commitHotkey(state.hotkeyDraft);
+      else showToast("请先按下要录制的快捷键组合", "error");
       return;
     }
-    void commitHotkey(combo);
+    if (event.key === "Backspace" || event.key === "Delete") {
+      void clearCapturedHotkey();
+      return;
+    }
+    if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
+    if (event.metaKey) {
+      showToast("Win 键组合为系统保留，请使用 Ctrl / Alt / Shift", "error");
+      return;
+    }
+    const combo = acceleratorFromEvent(event);
+    if (!combo) {
+      showToast("请按字母、数字或功能键，并至少包含 Ctrl / Alt / Shift 之一", "error");
+      return;
+    }
+    // 先写入输入框，按 Enter 才提交。
+    state.hotkeyDraft = combo;
+    refreshActive();
     return;
   }
   const target = event.target as HTMLElement;
   const mod = event.ctrlKey || event.metaKey;
 
   if (state.commandOpen) {
+    if (state.commandMode === "createShortcut") {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeCommandPalette();
+      }
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       moveCommandCursor(event.key === "ArrowDown" ? 1 : -1);

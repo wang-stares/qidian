@@ -1,6 +1,9 @@
 import type {
   AppEntry,
   AppSource,
+  BrokenShortcut,
+  CreateShortcutSpec,
+  HotkeyStatus,
   MemoryLastAction,
   MemoryStatus,
   ModuleId,
@@ -160,7 +163,10 @@ export const MOCK_SETTINGS: Settings = (() => {
     [idsByNames(["飞书"])[0]]: 11,
     [idsByNames(["Steam"])[0]]: 4,
   };
-  settings.appHotkeys = { [MOCK_APPS[0].id]: "Ctrl+Alt+1" };
+  settings.appHotkeys = {
+    [MOCK_APPS[0].id]: "Ctrl+Alt+1",
+    [MOCK_APPS[1].id]: "Ctrl+Alt+P",
+  };
   return settings;
 })();
 
@@ -636,6 +642,81 @@ export function mockCleanupDelete(
     (candidate) => !report.deleted.includes(candidate.path),
   );
   return report;
+}
+
+/** 按当前设置为浏览器预览生成快捷键注册状态。 */
+export function mockHotkeyStatus(settings: Settings): HotkeyStatus {
+  const entries: HotkeyStatus = [
+    { id: "toggle", accelerator: settings.hotkeyToggle, ok: true, reason: null },
+  ];
+  for (const [appId, accelerator] of Object.entries(settings.appHotkeys)) {
+    // 固定演示一个被占用的组合，便于查看冲突提示条与失败状态。
+    const conflict = accelerator.toLowerCase() === "ctrl+alt+p";
+    entries.push({
+      id: `app:${appId}`,
+      accelerator,
+      ok: !conflict,
+      reason: conflict ? "已被其他程序占用（预览示例）" : null,
+    });
+  }
+  return entries;
+}
+
+let mockBrokenShortcutsList: BrokenShortcut[] = [
+  {
+    path: "C:\\Users\\you\\Desktop\\旧版工具箱.lnk",
+    name: "旧版工具箱",
+    target: "C:\\Program Files\\OldToolbox\\Toolbox.exe",
+    reason: "目标文件不存在",
+    kind: "lnk",
+  },
+  {
+    path: "C:\\Users\\you\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\公司内网.url",
+    name: "公司内网",
+    target: "http://intranet.example.com",
+    reason: "网址无效或无法解析",
+    kind: "url",
+  },
+  {
+    path: "C:\\Users\\you\\Desktop\\空目标.lnk",
+    name: "空目标",
+    target: null,
+    reason: "快捷方式没有目标",
+    kind: "lnk",
+  },
+];
+
+export function mockScanBrokenShortcuts(): BrokenShortcut[] {
+  return mockBrokenShortcutsList.map((item) => ({ ...item }));
+}
+
+export function mockRelocateShortcut(path: string, newTarget: string): void {
+  const item = mockBrokenShortcutsList.find((entry) => entry.path === path);
+  if (!item) throw new Error("快捷方式已不存在");
+  item.target = newTarget;
+  // 重新定位后不再算失效，从列表移除。
+  mockBrokenShortcutsList = mockBrokenShortcutsList.filter((entry) => entry.path !== path);
+}
+
+export function mockDeleteShortcuts(paths: string[]): number {
+  const removing = new Set(paths);
+  const before = mockBrokenShortcutsList.length;
+  mockBrokenShortcutsList = mockBrokenShortcutsList.filter(
+    (entry) => !removing.has(entry.path),
+  );
+  return before - mockBrokenShortcutsList.length;
+}
+
+export function mockCreateShortcut(spec: CreateShortcutSpec): string {
+  const safeName = (spec.name.trim() || "快捷方式").replace(/[\\/:*?"<>|]/g, "");
+  if (spec.location === "startMenu") {
+    return `C:\\Users\\you\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\${safeName}.lnk`;
+  }
+  if (spec.location === "sameFolder") {
+    const dir = spec.target.replace(/[\\/][^\\/]*$/, "");
+    return `${dir || "C:\\"}\\${safeName}.lnk`;
+  }
+  return `C:\\Users\\you\\Desktop\\${safeName}.lnk`;
 }
 
 export function mockProcessItems(): ProcessItem[] {

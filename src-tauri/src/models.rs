@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 显示/隐藏主窗口的默认全局快捷键。
+pub const DEFAULT_HOTKEY_TOGGLE: &str = "Ctrl+Alt+Q";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AppSource {
@@ -321,6 +324,8 @@ pub struct Settings {
     pub memory_skip_apps: Vec<String>,
     pub hotkey_toggle: String,
     pub app_hotkeys: HashMap<String, String>,
+    /// 是否启用「双击 Ctrl 唤出窗口」的低级键盘钩子。
+    pub double_ctrl_enabled: bool,
     pub close_to_tray: bool,
     pub tray_quick_apps: bool,
     pub cleanup_recycle_bin: bool,
@@ -378,8 +383,9 @@ impl Default for Settings {
             memory_pause_fullscreen: true,
             memory_power_aware: true,
             memory_skip_apps: Vec::new(),
-            hotkey_toggle: "Ctrl+Alt+Q".to_string(),
+            hotkey_toggle: DEFAULT_HOTKEY_TOGGLE.to_string(),
             app_hotkeys: HashMap::new(),
+            double_ctrl_enabled: false,
             close_to_tray: true,
             tray_quick_apps: true,
             cleanup_recycle_bin: true,
