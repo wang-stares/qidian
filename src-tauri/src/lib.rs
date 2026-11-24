@@ -35,6 +35,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::http::{header, HeaderValue, Response, StatusCode};
 use tauri::{Emitter, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -1775,6 +1776,44 @@ pub fn run() {
                 })
                 .build(),
         )
+        // 图标协议：前端按 appId 直接取 PNG，避免每次渲染都经 IPC 传 base64。
+        // Windows/WebView2 的地址是 http://qidian-icon.localhost/<id>.png，
+        // 其他平台是 qidian-icon://localhost/<id>.png，两者 uri 的 path 都是 /<id>.png。
+        .register_uri_scheme_protocol("qidian-icon", |ctx, request| {
+            let path = request.uri().path();
+            let file = path.rsplit('/').next().unwrap_or("");
+            let id = file.strip_suffix(".png").unwrap_or("");
+            // 只服务当前应用索引里的 id；只读已有缓存，不在这里提取图标，
+            // 未预热的应用由前端 onerror 退回原有的 loadIcons 流程。
+            let state = ctx.app_handle().try_state::<AppState>();
+            let bytes = state.and_then(|state| {
+                let known = !id.is_empty()
+                    && state
+                        .apps
+                        .lock()
+                        .map(|apps| apps.contains_key(id))
+                        .unwrap_or(false);
+                if known {
+                    icons::cached_icon(&state.paths, id)
+                } else {
+                    None
+                }
+            });
+            let (status, body) = match bytes {
+                Some(bytes) => (StatusCode::OK, bytes),
+                None => (StatusCode::NOT_FOUND, Vec::new()),
+            };
+            let mut response = Response::new(body);
+            *response.status_mut() = status;
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+            // 缓存文件会被预热流程改写，不让 WebView 长期复用旧响应。
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            response
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if QUITTING.load(Ordering::SeqCst) || !TRAY_OK.load(Ordering::SeqCst) {

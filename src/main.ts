@@ -704,6 +704,27 @@ const iconRequested = new Set<string>();
 const iconQueue: string[] = [];
 /** 图标 data URL 的常驻内存上限；超出时淘汰最久未用的（磁盘缓存还在，滚回时秒加载）。 */
 const MAX_ICON_CACHE = 600;
+/** 协议图标 404 的 id：避免每次重渲染都重复请求，预热推进后清空重试。 */
+const protocolIconMiss = new Set<string>();
+
+/**
+ * 协议图标加载失败时退回占位图：资源错误事件不冒泡，用捕获阶段统一处理，
+ * 同时把该 id 交给原有分批 loadIcons 兜底（预热未完成的应用仍能出图标）。
+ * 这里不打印日志，避免一张缺失图标刷屏。
+ */
+function handleProtocolIconError(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLImageElement)) return;
+  const id = target.dataset.iconProtocol;
+  if (!id) return;
+  protocolIconMiss.add(id);
+  const host = target.closest<HTMLElement>("[data-icon-host]");
+  if (!host) return;
+  host.innerHTML = placeholderIconMarkup();
+  enqueueIcons([id], true);
+}
+
+document.addEventListener("error", handleProtocolIconError, true);
 
 /** 应用网格的分帧渲染队列：应用很多时首帧只渲染前几组，其余按帧追加，避免一次性生成几千个节点卡住首帧。 */
 let pendingSections: string[] = [];
@@ -738,6 +759,38 @@ let renderRaf = 0;
 let renderScopeAll = true;
 let previousFocus: HTMLElement | null = null;
 let settingsAnimated = false;
+
+/**
+ * 仅 dev 的渲染计时：把最近 20 次「搜索过滤 / 内容渲染」的毫秒数挂到
+ * window.__qidianPerf（如 __qidianPerf.searchFilter / __qidianPerf.renderContent）。
+ * 生产构建中 import.meta.env.DEV 被替换为 false，常量与窗口挂载会被摇掉，不留任何全局对象。
+ */
+const devPerf: Record<string, number[]> | null = import.meta.env.DEV ? {} : null;
+
+function devPerfStart(kind: string): void {
+  if (devPerf) performance.mark(`qidian:${kind}:start`);
+}
+
+function devPerfEnd(kind: string): void {
+  if (!devPerf) return;
+  const name = `qidian:${kind}`;
+  performance.mark(`${name}:end`);
+  performance.measure(name, `${name}:start`, `${name}:end`);
+  const entries = performance.getEntriesByName(name);
+  const entry = entries[entries.length - 1];
+  if (entry) {
+    const samples = devPerf[kind] ?? (devPerf[kind] = []);
+    samples.push(Number(entry.duration.toFixed(2)));
+    if (samples.length > 20) samples.shift();
+  }
+  performance.clearMarks(`${name}:start`);
+  performance.clearMarks(`${name}:end`);
+  performance.clearMeasures(name);
+}
+
+if (devPerf) {
+  (window as Window & { __qidianPerf?: unknown }).__qidianPerf = devPerf;
+}
 
 /**
  * 排序模式常量必须在 boot() 之前定义：boot 会同步渲染一次界面，
@@ -1595,10 +1648,23 @@ function iconHostAttr(app: AppEntry): string {
 
 function renderIconMarkup(app: AppEntry): string {
   const cached = iconCache.get(app.id);
-  if (cached) return `<img src="${cached}" alt="" draggable="false" decoding="async" />`;
+  if (cached) {
+    return `<img src="${cached}" alt="" draggable="false" loading="lazy" decoding="async" />`;
+  }
   if (app.visual) {
     return `<div class="mock-icon" style="--tone:${app.visual.tone}">${icon(app.visual.glyph)}</div>`;
   }
+  // 优先走自定义协议直读磁盘缓存；协议失效的应用记入 miss 集，交给 loadIcons 兜底。
+  const direct = protocolIconMiss.has(app.id) ? null : api.iconUrl(app.id);
+  if (direct) {
+    return `<img src="${direct}" alt="" draggable="false" loading="lazy" decoding="async" data-icon-protocol="${escapeHtml(
+      app.id,
+    )}" />`;
+  }
+  return placeholderIconMarkup();
+}
+
+function placeholderIconMarkup(): string {
   return `<div class="mock-icon placeholder-icon">${icon("monitor")}</div>`;
 }
 
@@ -1634,12 +1700,14 @@ function flushPendingSections(): void {
   }, 16);
 }
 
-function enqueueIcons(ids: string[]): void {
+function enqueueIcons(ids: string[], force = false): void {
   if (state.memorySqueezed) return;
   const map = appMap();
   for (const id of ids) {
     const app = map.get(id);
     if (!app || app.visual || iconCache.has(id) || iconRequested.has(id)) continue;
+    // 协议能直读磁盘时不必走 IPC；只有协议加载失败的 id（force）才回退到分批加载。
+    if (!force && api.iconUrl(id)) continue;
     if (!iconQueue.includes(id)) iconQueue.push(id);
   }
   if (iconQueue.length === 0) return;
@@ -1662,6 +1730,10 @@ async function warmIconsStep(): Promise<void> {
   }
   try {
     const result = await api.warmIcons();
+    if (result.processed > 0) {
+      // 预热推进后清掉失败记录，后续渲染可重新走协议加载。
+      protocolIconMiss.clear();
+    }
     if (result.processed > 0 && result.pending > 0) {
       // 分批预热：可见时继续下一批，隐藏或最小化时留到下次回到前台。
       if (!(await windowActive())) {
@@ -1748,7 +1820,7 @@ function updateIconHosts(ids: string[]): void {
     if (!id || !pending.has(id)) return;
     const url = iconCache.get(id);
     if (!url) return;
-    host.innerHTML = `<img src="${url}" alt="" draggable="false" decoding="async" />`;
+    host.innerHTML = `<img src="${url}" alt="" draggable="false" loading="lazy" decoding="async" />`;
     host.removeAttribute("data-icon-host");
   });
 }
@@ -1803,12 +1875,18 @@ function collectSearchResults(
 }
 
 function searchResults(tokens = searchTokens()): AppEntry[] {
-  if (tokens.length === 0) return [];
+  devPerfStart("searchFilter");
+  if (tokens.length === 0) {
+    devPerfEnd("searchFilter");
+    return [];
+  }
   const phrase = normalizeText(state.query);
   // 先走精确 / 前缀 / 拼音 / 路径等常规匹配；一个都没有时才启用模糊兜底，
   // 避免模糊结果混进正常搜索，同时保证拼写略错时不至于完全搜不到。
   const strict = collectSearchResults(tokens, phrase, false);
-  return strict.length > 0 ? strict : collectSearchResults(tokens, phrase, true);
+  const results = strict.length > 0 ? strict : collectSearchResults(tokens, phrase, true);
+  devPerfEnd("searchFilter");
+  return results;
 }
 
 /** 归一化文本并保留每个字符对应的原文下标，用于高亮定位。 */
@@ -1964,11 +2042,13 @@ function emptyState(
 }
 
 function renderContent(): void {
+  devPerfStart("renderContent");
   if (state.loading || (state.apps.length === 0 && state.scanning)) {
     els.skeleton.hidden = false;
     els.contentBody.hidden = true;
     els.contentBody.innerHTML = "";
     pendingSections = [];
+    devPerfEnd("renderContent");
     return;
   }
   els.skeleton.hidden = true;
@@ -2112,6 +2192,7 @@ function renderContent(): void {
       node.classList.toggle("is-cursor", node.dataset.appId === current?.id);
     });
   }
+  devPerfEnd("renderContent");
 }
 
 /* ── scan ─────────────────────────────────────────────────────── */
@@ -9825,6 +9906,8 @@ function clearSearch(focus = true): void {
 }
 
 function updateSearch(value: string): void {
+  const previousIds = state.lastResults.map((app) => app.id);
+  const previousTokens = searchTokens();
   state.query = value;
   state.cursorIndex = 0;
   state.selectedId = null;
@@ -9833,6 +9916,30 @@ function updateSearch(value: string): void {
   els.searchClear.hidden = value.length === 0;
   state.lastResults = searchResults();
   resultsQuery = value;
+
+  // 结果的应用 id 序列（含顺序）和高亮 token 都没变时，只同步光标高亮，不整块重绘。
+  // 典型场景：输入后又删回同一个词。高亮 token 也参与比较，避免结果相同但
+  // <mark> 位置该变时留下旧高亮。千条以内的 includes 是微秒级，无需额外缓存。
+  const tokens = searchTokens();
+  const unchanged =
+    tokens.length === previousTokens.length &&
+    tokens.every((token, index) => token === previousTokens[index]) &&
+    state.lastResults.length === previousIds.length &&
+    state.lastResults.every((app, index) => app.id === previousIds[index]);
+  if (unchanged) {
+    // 保留「输入即回到顶部」的语义，并清掉标记，避免后续无关重绘再跳一次。
+    els.content.scrollTop = 0;
+    state.resetScroll = false;
+    const currentId = state.lastResults[state.cursorIndex]?.id;
+    els.contentBody.querySelectorAll<HTMLElement>("[data-app-id]").forEach((node) => {
+      const active = node.dataset.appId === currentId;
+      node.classList.toggle("is-cursor", active);
+      node.classList.toggle("is-selected", active);
+    });
+    if (state.previewOpen) renderPreviewPanel();
+    return;
+  }
+
   scheduleRender("query");
 }
 

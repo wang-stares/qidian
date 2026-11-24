@@ -15,6 +15,9 @@ const MAX_EXTRACT_THREADS: usize = 4;
 /// Shell 提取线程和磁盘读写，把首帧之后的交互抢掉。
 const WARM_BATCH: usize = 100;
 
+/// 单个缓存文件的上限：超过视为损坏，避免把异常文件塞进协议响应。
+const MAX_ICON_BYTES: usize = 4 * 1024 * 1024;
+
 /// 预热结果：本次处理数量与仍待预热的数量，前端据此决定是否继续下一批。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,10 +202,24 @@ fn load_one(icons_dir: &Path, id: &str, target: &LaunchTarget) -> Option<String>
 
 fn encode_png(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
-    if bytes.len() > 4 * 1024 * 1024 {
+    if bytes.len() > MAX_ICON_BYTES {
         return None;
     }
     Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+}
+
+/// 自定义协议 `qidian-icon` 读取磁盘缓存：只返回 `<id>.png` 的原始字节。
+/// 未预热、提取失败或 id 不合法时返回 None，由协议层回 404；
+/// 现场提取仍走 warm/load 流程，避免协议线程被 Shell 调用卡住。
+pub fn cached_icon(paths: &Paths, id: &str) -> Option<Vec<u8>> {
+    if !valid_id(id) {
+        return None;
+    }
+    let bytes = fs::read(paths.icons.join(format!("{id}.png"))).ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_ICON_BYTES {
+        return None;
+    }
+    Some(bytes)
 }
 
 /// 提取失败会写 .miss 标记；只信任 24 小时内的失败记录，

@@ -5966,15 +5966,18 @@ mark {
   font-size: 9.5px;
 }
 
-/* 大列表滚动时跳过离屏卡片的布局与绘制，减少长列表开销 */
+/* 大列表滚动时跳过离屏卡片的布局与绘制，减少长列表开销。
+   卡片高度由主题变量 --tile-h 决定（默认 106 / miuix 128 / macOS 110 / mono 92 /
+   自定义 112，紧凑密度再覆盖）；auto 关键字记住实测尺寸，长名称占两行时也不会让滚动条跳动。 */
 .app-tile {
   content-visibility: auto;
-  contain-intrinsic-size: auto 84px;
+  contain-intrinsic-size: auto var(--tile-h);
 }
 
+/* 列表行同理：默认 50px、miuix 56px，auto 记住实测高度。 */
 .app-row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 28px;
+  contain-intrinsic-size: auto 50px;
 }
 
 /* ── app cleanup ──────────────────────────────────────────────── */

@@ -41,6 +41,8 @@ import { cloneSettings, DEFAULT_SETTINGS } from "./defaults";
 
 const TAURI = "__TAURI_INTERNALS__" in window;
 const MOCK_KEY = "qidian.settings.v1";
+/// 图标自定义协议：Windows/WebView2 只接受 http 形式，其他平台会解析为 qidian-icon://localhost。
+const ICON_PROTOCOL_ORIGIN = "http://qidian-icon.localhost";
 let mockModulePromise: Promise<typeof import("./mock")> | null = null;
 let mockAutostart = localStorage.getItem("qidian.mock.autostart") === "1";
 const mockUpdateListeners = new Set<(progress: UpdateProgress) => void>();
@@ -229,6 +231,11 @@ const mockBridge = {
   async loadIcons(ids: string[]): Promise<IconMap> {
     void ids;
     return {};
+  },
+
+  iconUrl(_id: string): string | null {
+    // 浏览器预览没有本地图标缓存，继续使用演示数据。
+    return null;
   },
 
   async warmIcons(): Promise<WarmIconsResult> {
@@ -653,6 +660,12 @@ const tauriBridge = {
 
   loadIcons(ids: string[]): Promise<IconMap> {
     return tauriInvoke<IconMap>("load_icons", { ids });
+  },
+
+  /// 图标的协议地址：由后端按 id 直读磁盘缓存，不必再经 IPC 传 base64。
+  iconUrl(id: string): string | null {
+    if (!id) return null;
+    return `${ICON_PROTOCOL_ORIGIN}/${encodeURIComponent(id)}.png`;
   },
 
   warmIcons(): Promise<WarmIconsResult> {
