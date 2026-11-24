@@ -2,6 +2,7 @@ mod autostart;
 mod cleanup;
 mod diagnostics;
 mod force_delete;
+mod frame;
 mod hotkeys;
 mod icons;
 mod launch;
@@ -1884,6 +1885,13 @@ pub fn run() {
                     hide_main(window.app_handle());
                 }
             }
+            // 最大化 / 还原后重新同步圆角，最大化时必须是直角。
+            if matches!(event, WindowEvent::Resized(_)) {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    let maximized = webview.is_maximized().unwrap_or(false);
+                    frame::sync_round_corners(&webview, maximized);
+                }
+            }
         })
         .setup(|app| {
             let paths = store::Paths::resolve(app.handle()).map_err(std::io::Error::other)?;
@@ -1925,6 +1933,8 @@ pub fn run() {
                 {
                     let _ = window.set_icon(icon);
                 }
+                // 透明 + Mica 的窗口由系统按矩形绘制材质，四角会露底，交给 DWM 裁圆。
+                frame::sync_round_corners(&window, false);
             }
 
             // 除“启动应用”外的能力都以插件形式存在，只有安装后才初始化对应的常驻逻辑。

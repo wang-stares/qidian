@@ -1,6 +1,6 @@
 [package]
 name = "qidian"
-version = "3.2.0"
+version = "3.2.1"
 description = "A quiet, lightweight app launcher for Windows"
 authors = ["QiDian"]
 edition = "2021"
@@ -30,8 +30,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+raw-window-handle = "0.6"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Storage_FileSystem",
