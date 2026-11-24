@@ -23,7 +23,15 @@ html {
     linear-gradient(138deg, #0a0d13 0%, #121925 52%, #0b0a10 100%);
 }
 
-html[data-runtime="tauri"],
+/* Tauri 窗口透明 + 系统圆角：四角圆弧外侧不在 .app 的绘制范围内。
+   这里若留 transparent，DWM 会把「既没被裁掉、又没有像素」的区域填成黑色，
+   也就是四角的黑楔。所以 html 必须铺满不透明底色：--app-bg 自带透明度，
+   下面垫一层不透明的 --dialog-bg 兜住 alpha，合成结果与 .app 背景同色。 */
+html[data-runtime="tauri"] {
+  background-color: var(--dialog-bg, #0b0e14);
+  background-image: linear-gradient(var(--app-bg, #0b0e14), var(--app-bg, #0b0e14));
+}
+
 [data-runtime="tauri"] body {
   background: transparent;
 }
@@ -108,9 +116,19 @@ svg:not(.sprite):not(.brand-mark):not(.brand-glyph) {
   border-radius: 12px;
 }
 
+/* 圆角半径不小于 DWM 的 8px DIP 裁切半径：DWM 的裁切弧落在 CSS 弧以内，
+   圆弧外侧那块一定被 DWM 切掉，只露出同色的 html 底色，不会出现错位。
+   外描边交给 DWM 默认描边：CSS 的 1px 边框在 12px 弧上会被裁断成虚线。 */
 [data-runtime="tauri"] .app {
-  border-radius: 8px;
+  border: 0;
+  border-radius: 12px;
   box-shadow: none;
+}
+
+/* Win10 没有 DWM 圆角裁切（build < 22000），直角窗口叠 12px 圆弧会错位，
+   回落到 8px；此时四角由 html 底色填成实心而非黑色。 */
+html[data-os-round="false"][data-runtime="tauri"] .app {
+  border-radius: 8px;
 }
 
 [data-runtime="tauri"] .app[data-theme="miuix"] {

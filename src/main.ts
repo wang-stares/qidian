@@ -841,6 +841,19 @@ const SORT_LABELS: Record<SortMode, string> = {
 
 document.documentElement.dataset.runtime = isTauri ? "tauri" : "web";
 
+// Win10（build < 22000）没有 DWMWA_WINDOW_CORNER_PREFERENCE，DWM 不会裁圆角。
+// 问后端要结果，让 CSS 把圆角回落到 8px，避免直角窗口里叠 12px 圆弧。
+if (isTauri) {
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<boolean>("window_round_corners"))
+    .then((supported) => {
+      document.documentElement.dataset.osRound = String(supported);
+    })
+    .catch(() => {
+      // 查询失败按支持处理，保持 12px 档位，不影响渲染
+    });
+}
+
 if (!isTauri) {
   const badge = document.createElement("span");
   badge.className = "demo-badge";
@@ -1025,7 +1038,8 @@ function applyCustomPalette(palette: CustomPalette): void {
   const set = (key: string, value: string) => els.app.style.setProperty(key, value);
   const radiusPx = (value: number) => `${Math.round(value)}px`;
 
-  set("--app-bg", rgbaFromHex(bg, 0.94));
+  const appBg = rgbaFromHex(bg, 0.94);
+  set("--app-bg", appBg);
   set("--app-tint", rgbaFromHex("#ffffff", dark ? 0.02 : 0.3));
   set("--panel", rgbaFromHex(panel, opacity));
   set("--panel-strong", rgbaFromHex(panel, Math.min(1, opacity + 0.14)));
@@ -1044,7 +1058,11 @@ function applyCustomPalette(palette: CustomPalette): void {
   set("--text-3", mixHex(text, bg, 0.46));
   set("--hover", rgbaFromHex(text, dark ? 0.06 : 0.045));
   set("--hover-strong", rgbaFromHex(text, dark ? 0.1 : 0.08));
-  set("--dialog-bg", mixHex(panel, bg, 0.82));
+  const dialogBg = mixHex(panel, bg, 0.82);
+  set("--dialog-bg", dialogBg);
+  // <html> 的圆角外侧底色复用这两个令牌；内联变量不继承，必须显式同步一份。
+  document.documentElement.style.setProperty("--app-bg", appBg);
+  document.documentElement.style.setProperty("--dialog-bg", dialogBg);
   set("--flyout-bg", rgbaFromHex(panel, 0.95));
   set("--toast-bg", dark ? "rgba(244, 244, 246, 0.96)" : "rgba(22, 22, 24, 0.95)");
   set("--toast-text", dark ? "#161618" : "#f7f7f9");
@@ -1125,6 +1143,13 @@ function applyAppearance(): void {
   els.app.dataset.blur = settings.blur;
   els.app.dataset.wallpaper = settings.wallpaper;
   els.app.dataset.lowpower = String(settings.lowPower);
+  // 圆角外侧的底色由 <html> 兜底，而 --app-bg / --dialog-bg 是按
+  // [data-theme][data-mode] 属性选择器声明的，必须把配色属性镜像到 <html>。
+  const root = document.documentElement;
+  root.dataset.theme = settings.theme;
+  root.dataset.mode = els.app.dataset.mode;
+  root.dataset.accent = settings.accent;
+  root.dataset.corners = settings.corners;
   document.documentElement.style.colorScheme = resolvedMode();
 
   const customAccent = HEX_COLOR.test(settings.customAccent) ? settings.customAccent : "#1b62d6";
@@ -1140,6 +1165,9 @@ function applyAppearance(): void {
     applyCustomPalette(settings.customPalette);
   } else {
     for (const key of CUSTOM_THEME_VARS) els.app.style.removeProperty(key);
+    // 自定义调色板会内联覆盖这两个令牌，切回内置主题时要一并清掉。
+    document.documentElement.style.removeProperty("--app-bg");
+    document.documentElement.style.removeProperty("--dialog-bg");
   }
 
   els.app.style.setProperty(

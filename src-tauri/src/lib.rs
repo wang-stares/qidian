@@ -59,6 +59,13 @@ struct AppState {
     cache_at: Mutex<Option<u64>>,
 }
 
+/// 窗口四角是否由 DWM 裁切（Windows 11 build 22000+）。
+/// 前端据此决定 CSS 圆角档位：Win10 不裁圆角时回落到 8px。
+#[tauri::command]
+fn window_round_corners() -> bool {
+    frame::dwm_round_supported()
+}
+
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Result<Bootstrap, String> {
     let settings = state
@@ -1977,6 +1984,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            window_round_corners,
             bootstrap,
             prune_missing_apps,
             scan_apps,
